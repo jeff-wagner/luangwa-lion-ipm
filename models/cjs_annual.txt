@@ -1,0 +1,27 @@
+
+model {
+  # Priors
+  phi.const ~ dunif(0, 1)        # Vague prior for constant survival probability
+  p.const ~ dunif(0, 1)          # Vague prior for constant detection probability
+  
+  for (i in 1:nind){                 # Loop over individuals
+    for (t in f[i]:(nyears-1)){      # Loop over intervals/occasions
+    phi[i,t] <- phi.const             # Model pattern in phi...
+    p[i,t] <- p.const                 # ... and p
+    
+    }
+  }
+  
+  # Likelihood
+  for (i in 1:nind){
+    # Define latent state at first capture
+    z[i,f[i]] <- 1
+    for (t in (f[i]+1):nyears){ 
+      # State process: does animal survive from t-1 to t?
+      z[i,t] ~ dbern(z[i,t-1] * phi[i,t-1])
+      
+      # Observation process: is animal detected at t?
+      y[i,t] ~ dbern(z[i,t] * p[i,t-1])
+    }
+  }
+}

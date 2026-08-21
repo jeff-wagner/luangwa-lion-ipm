@@ -1,0 +1,564 @@
+---
+title: "Luangwa Lion Integrated Population Model"
+subtitle: "Survival, reproduction and population dynamics inside and outside South Luangwa National Park"
+date: today
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    embed-resources: true
+    fig-width: 8
+    fig-height: 5
+    code-fold: true
+    code-summary: "Show code"
+    tbl-cap-location: top
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gt)
+library(coda)
+
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
+ipm <- readRDS("output/ipm_samples.RDS")
+s <- ipm$summary
+sy <- ipm$study_years
+Pop <- ipm$Pop
+set. <- ipm$settings
+
+dat <- readRDS("data/lion_ipm_data.RDS")
+jd <- dat$jags.data
+fecd <- dat$jags.data.fec
+cc <- read.csv("output/Pop_estimates_monthly_independent.csv")
+
+# pull a scalar parameter by name
+gv <- function(p, col = "mean") s[[col]][match(p, s$parameter)]
+
+# rows matching a regex, with index columns parsed out of "name[i, j, k]"
+grab <- function(pattern) {
+  r <- s[grepl(pattern, s$parameter), , drop = FALSE]
+  idx <- regmatches(r$parameter, regexpr("\\[.*\\]", r$parameter))
+  idx <- gsub("\\[|\\]", "", idx)
+  parts <- strsplit(idx, ",\\s*")
+  maxn <- max(lengths(parts))
+  for (k in seq_len(maxn)) {
+    r[[paste0("i", k)]] <- as.integer(vapply(
+      parts,
+      function(x) if (length(x) >= k) x[k] else NA_character_,
+      ""
+    ))
+  }
+  r
+}
+
+age_labs <- c("Cub (0–1.99)", "Subadult (2–3.99)", "Prime (4–5.99)", "Old (6+)")
+sex_labs <- c("Female", "Male")
+prot_labs <- c("Inside park", "Outside park")
+
+pal <- c("Inside park" = "#16b900", "Outside park" = "#014fa8")
+
+theme_set(
+  theme_minimal(base_size = 12) +
+    theme(
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold"),
+      legend.position = "top",
+      strip.text = element_text(face = "bold")
+    )
+)
+
+tbl_style <- function(x) {
+  # A system font stack, not google_font(): with embed-resources the whole
+  # font family is inlined as base64 in every table, which took this report
+  # to 17 MB, of which 15.7 MB was fonts.
+  x |>
+    opt_table_font(font = gt::default_fonts()) |>
+    tab_options(
+      table.font.size = px(14),
+      heading.title.font.size = px(17),
+      heading.subtitle.font.size = px(13),
+      column_labels.font.weight = "bold",
+      data_row.padding = px(5),
+      table.border.top.style = "none",
+      source_notes.font.size = px(11)
+    )
+}
+```
+
+::: {.callout-note appearance="minimal"}
+Generated from `output/ipm_samples.RDS`.
+`r set.$N_CHAINS %||% 3` chains × `r format(set.$N_ITER, big.mark = ",")` iterations,
+burn-in `r format(set.$N_BURNIN, big.mark = ",")`, thin `r set.$N_THIN`.
+:::
+
+# The model
+
+This IPM follows Creel et al. (2024,
+*Conservation Science and Practice*), fitted to
+`r format(nrow(jd$y), big.mark = ",")` individually identified lions monitored
+in and around South Luangwa National Park from `r min(sy)` to `r max(sy)`.
+
+```{r}
+#| label: tbl-components
+#| tbl-cap: "The four component models and the data each one uses."
+tibble::tibble(
+  Component = c(
+    "Cormack–Jolly–Seber",
+    "Zero-inflated Poisson",
+    "Leslie projection",
+    "Gaussian state-space"
+  ),
+  Data = c(
+    sprintf("%s capture histories over %d occasions", format(jd$nind, big.mark = ","), jd$n.occasions),
+    sprintf("%d adult-female-years of cub counts", fecd$n),
+    "—",
+    sprintf("%d annual closed-capture estimates", sum(!is.na(Pop)))
+  ),
+  Estimates = c(
+    "Apparent survival by age class, sex and protection",
+    "Fecundity by protection level",
+    "Age structure and abundance through time",
+    "Population size as a latent variable; growth rate"
+  )
+) |>
+  gt() |>
+  tab_header(
+    title = "Model structure",
+    subtitle = "All components share one likelihood"
+  ) |>
+  cols_width(Component ~ px(190)) |>
+  tbl_style()
+```
+
+**Occasions.** Four 2-month bins per year (May–Jun, Jul–Aug, Sep–Oct, Nov–Dec)
+give `r jd$n.occasions` occasions across `r length(sy)` years. Creel et al.
+used three bins covering May–Oct; the Luangwa season runs later, and the fourth
+bin raises retention from roughly 75% to 90% of individual-months. Per-interval
+survival is annualised as $\phi^{`r jd$surv.exp`}$, and
+$\phi^{`r round(jd$surv.exp.cub, 3)`}$ for cubs, which are undetectable for
+their first few months.
+
+**Protection.** Every sighting was overlaid on the WDPA park boundary. Each
+lion was assigned to a protected status per occasion, which was carried forward across occasions when
+it was not seen. `r sum(apply(jd$area, 1, function(r) length(unique(r)) > 1))`
+of `r jd$nind` lions changed protected status during the study, which is what separates
+the protection effect from fixed differences between locations.
+
+**Fecundity** is first-year cubs per adult female per year. Litter counts and
+sizes are observed; maternal identity was known for only a third of litters, so
+litters were allocated within their pride — named mothers first, the remainder
+at random among the other adult females, one each.
+
+# Headline results
+
+```{r}
+#| label: tbl-headline
+#| tbl-cap: "Headline estimates. Intervals are 95% credible intervals."
+b_sex <- s[s$parameter == "beta.sex", ]
+b_prot <- s[s$parameter == "beta.prot", ]
+fec1 <- s[s$parameter == "fec[1]", ]
+fec2 <- s[s$parameter == "fec[2]", ]
+lam <- grab("^lambda\\.tot")
+lam_last <- lam[nrow(lam), ]
+nt <- grab("^Ntot")
+
+tibble::tibble(
+  Quantity = c(
+    "Effect of being outside the park on logit(survival)",
+    "Effect of being male on logit(survival)",
+    "Fecundity, inside park (cubs / adult female / year)",
+    "Fecundity, outside park",
+    sprintf("Population size, %d", max(sy)),
+    sprintf("Population growth rate, %d–%d", max(sy) - 1, max(sy))
+  ),
+  Estimate = c(
+    b_prot$q50, b_sex$q50, fec1$q50, fec2$q50,
+    nt$q50[nrow(nt)], lam_last$q50
+  ),
+  Lower = c(
+    b_prot$q2.5, b_sex$q2.5, fec1$q2.5, fec2$q2.5,
+    nt$q2.5[nrow(nt)], lam_last$q2.5
+  ),
+  Upper = c(
+    b_prot$q97.5, b_sex$q97.5, fec1$q97.5, fec2$q97.5,
+    nt$q97.5[nrow(nt)], lam_last$q97.5
+  )
+) |>
+  mutate(
+    excludes_zero = ifelse(
+      Quantity %in% c(
+        "Effect of being outside the park on logit(survival)",
+        "Effect of being male on logit(survival)"
+      ),
+      sign(Lower) == sign(Upper),
+      NA
+    )
+  ) |>
+  gt() |>
+  tab_header(title = "Headline estimates") |>
+  fmt_number(columns = c(Estimate, Lower, Upper), decimals = 3) |>
+  cols_merge(columns = c(Lower, Upper), pattern = "{1} – {2}") |>
+  cols_label(Lower = "95% CrI") |>
+  cols_hide(excludes_zero) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_body(columns = Estimate, rows = !is.na(excludes_zero) & excludes_zero)
+  ) |>
+  tab_footnote(
+    footnote = "Credible interval excludes zero.",
+    locations = cells_body(
+      columns = Estimate,
+      rows = !is.na(excludes_zero) & excludes_zero
+    )
+  ) |>
+  cols_width(Quantity ~ px(340)) |>
+  tbl_style()
+```
+
+Lions ranging outside the park have substantially lower apparent survival. Creel et al. found only a weak
+tendency in the same direction in Kafue. Protected status shows no effect on fecundity.
+
+::: {.callout-warning appearance="simple"}
+Apparent survival is modeled here, which may confound mortality with permanent emigration. Lions ranging
+outside the park are plausibly may also be more likely to leave the study area
+altogether, so part of the protection effect may be dispersal rather than death?
+:::
+
+# Survival
+
+```{r}
+#| label: tbl-survival
+#| tbl-cap: "Annual apparent survival by age class, sex and protection stratum."
+surv <- grab("^surv\\.annual") |>
+  transmute(
+    age = age_labs[i1],
+    sex = sex_labs[i2],
+    prot = prot_labs[i3],
+    est = q50,
+    lo = q2.5,
+    hi = q97.5
+  )
+
+surv |>
+  mutate(cell = sprintf("%.3f (%.3f–%.3f)", est, lo, hi)) |>
+  select(age, sex, prot, cell) |>
+  pivot_wider(names_from = c(prot, sex), values_from = cell, names_sep = "|") |>
+  gt(rowname_col = "age") |>
+  tab_header(
+    title = "Annual apparent survival",
+    subtitle = "Posterior median (95% credible interval)"
+  ) |>
+  tab_spanner(label = "Inside park", columns = starts_with("Inside")) |>
+  tab_spanner(label = "Outside park", columns = starts_with("Outside")) |>
+  cols_label(
+    `Inside park|Female` = "Female",
+    `Inside park|Male` = "Male",
+    `Outside park|Female` = "Female",
+    `Outside park|Male` = "Male"
+  ) |>
+  tab_stubhead(label = "Age class") |>
+  tab_style(
+    style = cell_fill(color = "#eef5ef"),
+    locations = cells_body(columns = starts_with("Inside"))
+  ) |>
+  tab_source_note(
+    "The model estimates additive effects of sex and protection on the logit scale, with no interaction."
+  ) |>
+  tbl_style()
+```
+
+```{r}
+#| label: fig-survival
+#| fig-cap: "Annual apparent survival. Points are posterior medians, bars 95% credible intervals."
+#| fig-height: 4.5
+surv |>
+  mutate(age = factor(age, levels = age_labs)) |>
+  ggplot(aes(x = age, y = est, colour = prot, shape = sex)) +
+  geom_linerange(
+    aes(ymin = lo, ymax = hi),
+    position = position_dodge(width = 0.55),
+    linewidth = 0.7
+  ) +
+  geom_point(position = position_dodge(width = 0.55), size = 2.8) +
+  scale_colour_manual(values = pal, name = NULL) +
+  scale_shape_manual(values = c(Female = 16, Male = 17), name = NULL) +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  labs(x = NULL, y = "Annual apparent survival") +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+Survival rises from cub to prime adult and falls again in old age, in every
+sex-by-protection combination. The gap between strata is constant on the logit
+scale by construction: the model fits additive effects with no interaction, as
+in the published analysis.
+
+# Reproduction
+
+```{r}
+#| label: tbl-fecundity
+#| tbl-cap: "Fecundity component. The zero-inflated Poisson separates whether a female bred at all from how many cubs she raised."
+fec_rows <- s[s$parameter %in% c("psi", "alpha", "gamma[2]", "fec[1]", "fec[2]"), ]
+fec_rows$label <- c(
+  alpha = "log mean litter contribution, inside park (α)",
+  psi = "Probability a female bred (ψ)",
+  `gamma[2]` = "Difference for outside park, log scale (γ₂)",
+  `fec[1]` = "Fecundity, inside park",
+  `fec[2]` = "Fecundity, outside park"
+)[fec_rows$parameter]
+
+fec_rows |>
+  select(label, q50, q2.5, q97.5, Rhat) |>
+  gt() |>
+  tab_header(
+    title = "Fecundity",
+    subtitle = "First-year cubs per adult female per year"
+  ) |>
+  fmt_number(columns = c(q50, q2.5, q97.5), decimals = 3) |>
+  fmt_number(columns = Rhat, decimals = 3) |>
+  cols_merge(columns = c(q2.5, q97.5), pattern = "{1} – {2}") |>
+  cols_label(label = "", q50 = "Median", q2.5 = "95% CrI") |>
+  cols_width(label ~ px(320)) |>
+  tab_source_note(
+    sprintf(
+      "Based on %d adult-female-years, %d–%d. Maternal identity was imputed within pride-years for the litters where it was unknown.",
+      fecd$n, min(dat$settings$FEC_YEARS), max(dat$settings$FEC_YEARS)
+    )
+  ) |>
+  tbl_style()
+```
+
+Only about `r round(100 * gv("psi"))`% of adult-female-years involved breeding (the zero inflation doing its job) — a lioness with surviving cubs from
+the previous year does not conceive. Among those that did breed, the Poisson
+mean was `r round(exp(gv("alpha")), 2)` cubs.
+
+# Population size and growth
+
+```{r}
+#| label: fig-popsize
+#| fig-cap: "Population size from the IPM against the closed-capture estimates it was fitted to. Open points are years excluded by the survey-effort restriction and contribute no likelihood."
+nt_df <- tibble::tibble(
+  year = sy,
+  est = nt$q50,
+  lo = nt$q2.5,
+  hi = nt$q97.5,
+  Pop = Pop
+)
+cc_df <- cc |> transmute(year, N = N_median, used = effort_ok)
+
+ggplot(nt_df, aes(year)) +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey70", alpha = 0.45) +
+  geom_line(aes(y = est), linewidth = 0.9) +
+  geom_point(
+    data = cc_df,
+    aes(y = N, shape = used, fill = used),
+    size = 2.6,
+    colour = "#b2182b"
+  ) +
+  scale_shape_manual(
+    values = c(`TRUE` = 21, `FALSE` = 21),
+    labels = c("excluded (low effort)", "used"),
+    name = NULL
+  ) +
+  scale_fill_manual(
+    values = c(`TRUE` = "#b2182b", `FALSE` = "white"),
+    labels = c("excluded (low effort)", "used"),
+    name = NULL
+  ) +
+  scale_x_continuous(breaks = scales::pretty_breaks(8)) +
+  labs(x = NULL, y = "Lions")
+```
+
+```{r}
+#| label: tbl-popsize
+#| tbl-cap: "Population size by year, with the closed-capture estimate supplied to the state-space model."
+nt_df |>
+  left_join(cc_df, by = "year") |>
+  transmute(
+    year,
+    N,
+    used,
+    est,
+    lo,
+    hi,
+    dens = est / (set.$AREA_KM2 %||% NA_real_) * 100
+  ) |>
+  gt() |>
+  tab_header(
+    title = "Population size",
+    subtitle = "IPM posterior against the closed-capture input"
+  ) |>
+  fmt_number(columns = c(N, est, lo, hi), decimals = 0) |>
+  fmt_number(columns = dens, decimals = 2) |>
+  sub_missing(missing_text = "—") |>
+  cols_merge(columns = c(lo, hi), pattern = "{1} – {2}") |>
+  cols_label(
+    year = "Year",
+    N = "Closed capture",
+    used = "Used",
+    est = "IPM median",
+    lo = "95% CrI",
+    dens = "per 100 km²"
+  ) |>
+  text_transform(
+    locations = cells_body(columns = used),
+    fn = function(x) ifelse(x == "TRUE", "✓", "")
+  ) |>
+  tab_style(
+    style = cell_text(color = "#999999"),
+    locations = cells_body(rows = !used)
+  ) |>
+  tab_source_note(
+    sprintf(
+      "Density uses a placeholder area of %s km². Replace AREA_KM2 in R/04_ipm.R with the kernel-utilisation estimate before reporting density.",
+      format(set.$AREA_KM2 %||% NA, big.mark = ",")
+    )
+  ) |>
+  tbl_style()
+```
+
+```{r}
+#| label: fig-lambda
+#| fig-cap: "Annual population growth rate. Vital rates are constant through time, so variation here reflects age structure settling rather than changing demography."
+#| fig-height: 4
+lam_df <- tibble::tibble(
+  year = sy[-length(sy)],
+  est = lam$q50,
+  lo = lam$q2.5,
+  hi = lam$q97.5
+)
+ggplot(lam_df, aes(year, est)) +
+  geom_hline(yintercept = 1, linetype = 2, colour = "grey40") +
+  geom_ribbon(aes(ymin = lo, ymax = hi), fill = "grey70", alpha = 0.45) +
+  geom_line(linewidth = 0.9) +
+  scale_x_continuous(breaks = scales::pretty_breaks(8)) +
+  labs(x = NULL, y = expression(lambda))
+```
+
+::: {.callout-important appearance="simple"}
+The Leslie projection assumes constant vital rates and no immigration or
+emigration ("growth in place"). $\lambda$ is therefore a property of the fitted
+demography, not an independent measurement of year-to-year change, and it
+cannot detect a real change in demographic rates through time.
+:::
+
+# Data behind the model
+
+```{r}
+#| label: tbl-closedcapture
+#| tbl-cap: "Closed-capture model by year. Years were excluded where survey effort was too low, the chain did not converge, or the posterior pressed against the data-augmentation ceiling."
+cc |>
+  transmute(
+    year, n_known, det_per_lion,
+    N_median, N_lower, N_upper,
+    mean_p, sigma, Rhat_N,
+    used = effort_ok
+  ) |>
+  gt() |>
+  tab_header(
+    title = "Annual closed-capture estimates",
+    subtitle = "Model Mh with data augmentation, monthly occasions"
+  ) |>
+  fmt_number(columns = c(N_median, N_lower, N_upper), decimals = 0) |>
+  fmt_number(columns = c(det_per_lion, mean_p, sigma, Rhat_N), decimals = 2) |>
+  cols_merge(columns = c(N_lower, N_upper), pattern = "{1} – {2}") |>
+  cols_label(
+    year = "Year",
+    n_known = "Identified",
+    det_per_lion = "Detections / lion",
+    N_median = "N",
+    N_lower = "95% CrI",
+    mean_p = "p",
+    sigma = "σ",
+    Rhat_N = "R̂",
+    used = "Used"
+  ) |>
+  text_transform(
+    locations = cells_body(columns = used),
+    fn = function(x) ifelse(x == "TRUE", "✓", "")
+  ) |>
+  data_color(
+    columns = det_per_lion,
+    palette = c("#f6e8c3", "#c7eae5", "#5ab4ac")
+  ) |>
+  tab_style(
+    style = cell_text(color = "#999999"),
+    locations = cells_body(rows = !used)
+  ) |>
+  tbl_style()
+```
+
+Detections per identified lion is the effort measure the restriction is based
+on. It runs from `r sprintf("%.1f", min(cc$det_per_lion))` to
+`r sprintf("%.1f", max(cc$det_per_lion))`, and correlates
+`r sprintf("%.2f", cor(cc$det_per_lion, cc$N_median / cc$n_known))` with how far
+the closed-capture estimate exceeds the number of lions actually identified. In
+other words, thinly surveyed years produce inflated abundance estimates, because
+an Mh model explains "each lion seen fewer times" by positing more lions it
+never saw. With no independent effort covariate available, the only honest
+response was to drop those years.
+
+# Convergence
+
+```{r}
+#| label: tbl-convergence
+#| tbl-cap: "Convergence summary across all monitored parameters."
+stoch <- s |> filter(!is.na(sd), sd > 0, !is.na(Rhat))
+tibble::tibble(
+  Diagnostic = c(
+    "Monitored parameters",
+    "Maximum R̂",
+    "Parameters with R̂ > 1.1",
+    "Minimum effective sample size",
+    "Median effective sample size"
+  ),
+  Value = c(
+    as.character(nrow(stoch)),
+    sprintf("%.4f", max(stoch$Rhat)),
+    as.character(sum(stoch$Rhat > 1.1)),
+    format(round(min(stoch$n.eff)), big.mark = ","),
+    format(round(median(stoch$n.eff)), big.mark = ",")
+  )
+) |>
+  gt() |>
+  tab_header(title = "MCMC diagnostics") |>
+  cols_align(align = "left", columns = Diagnostic) |>
+  tab_style(
+    style = cell_text(
+      color = ifelse(max(stoch$Rhat) <= 1.1, "#1b7837", "#b2182b"),
+      weight = "bold"
+    ),
+    locations = cells_body(columns = Value, rows = 2:3)
+  ) |>
+  tbl_style()
+```
+
+# Caveats
+
+1. **Apparent survival is not true survival.** Permanent emigration is
+   indistinguishable from death in a CJS model, and it is plausibly more common
+   outside the park, where the protection effect is measured.
+2. **Cub survival is high** relative to published lion estimates because cubs
+   enter the data only once individually identified, so mortality in the first
+   months of life is invisible.
+3. **Fecundity rests on imputed maternity** and covers
+   `r min(dat$settings$FEC_YEARS)`–`r max(dat$settings$FEC_YEARS)`, while
+   survival covers `r min(sy)`–`r max(sy)`. It is estimated as one rate per
+   stratum rather than per year, so the mismatch is survivable, but this is the
+   weakest input in the model, and the absent protection effect on fecundity may
+   reflect the imputation as much as the biology.
+4. **Population size rests on `r sum(!is.na(Pop))` of `r length(sy)` years.**
+5. **Density is provisional** until `AREA_KM2` is replaced with a real estimate
+   of the area occupied.
+6. **This model departs from the published Kafue code in five documented ways**,
+   three of which change $\lambda$. See the header of `R/04_ipm.R`. Estimates
+   here are not directly comparable with the published figures.

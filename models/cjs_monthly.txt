@@ -1,0 +1,29 @@
+
+model {
+  # Priors
+  phi.month ~ dunif(0, 1)        # Vague prior for constant survival probability
+  p.month ~ dunif(0, 1)          # Vague prior for constant detection probability
+  
+  for (i in 1:nind){                 # Loop over individuals
+    for (t in f[i]:(nmonths-1)){      # Loop over intervals/occasions
+    phi[i,t] <- phi.month             # Model pattern in phi...
+    p[i,t] <- p.month                 # ... and p
+    
+    }
+  }
+  
+  # Likelihood
+  for (i in 1:nind){
+    # Define latent state at first capture
+    z[i,f[i]] <- 1
+    for (t in (f[i]+1):nmonths){ 
+      # State process: does animal survive from t-1 to t?
+      z[i,t] ~ dbern(z[i,t-1] * phi[i,t-1])
+      
+      # Observation process: is animal detected at t?
+      y[i,t] ~ dbern(z[i,t] * p[i,t-1])
+    }
+  }
+  # Derived parameter: Annual survival from monthly
+  phi.annual <- phi.month^12
+}

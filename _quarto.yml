@@ -1,0 +1,5 @@
+project:
+  type: default
+  # Render with the repository root as the working directory, so paths inside
+  # reports/ match the paths used by the scripts in R/.
+  execute-dir: project

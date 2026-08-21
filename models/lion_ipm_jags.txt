@@ -1,0 +1,198 @@
+model {
+
+# =============================================================================
+# Integrated population model for Luangwa lions
+# =============================================================================
+# Structure follows Creel et al. 2024 (Conserv Sci Pract): a CJS survival
+# model, a zero-inflated Poisson fecundity model, a Leslie projection linking
+# the two, and a Gaussian state-space observation model for population size,
+# all in one joint likelihood.
+#
+# Note on distributions: JAGS parameterises dnorm by PRECISION, not SD.
+#
+# Five documented departures from the published JAGS code are marked DEPARTURE
+# and explained at the top of R/04_ipm.R.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# SURVIVAL COMPONENT
+# CJS with age-class, sex and protection effects on phi, and a logit-normal
+# individual random effect on detection.
+# -----------------------------------------------------------------------------
+
+beta.sex ~ dlogis(0, 1)      # male effect
+beta.prot ~ dlogis(0, 1)     # effect of low protection
+
+for (a in 1:nageclass) {
+  mean.ageclass[a] ~ dlogis(0, 1)
+  logit(phi[a, 1, 1]) <- mean.ageclass[a]                          # F, high
+  logit(phi[a, 2, 1]) <- mean.ageclass[a] + beta.sex               # M, high
+  logit(phi[a, 1, 2]) <- mean.ageclass[a] + beta.prot              # F, low
+  logit(phi[a, 2, 2]) <- mean.ageclass[a] + beta.sex + beta.prot   # M, low
+}
+
+mean.p ~ dunif(0, 1)
+mu.p <- log(mean.p / (1 - mean.p))
+sigma.p ~ dunif(0, 5)
+tau.p <- pow(sigma.p, -2)
+
+# DEPARTURE 1: p carries an individual effect only, so it is indexed by
+# individual alone.  The published code writes the same quantity inside a loop
+# over occasions, creating n.occasions identical nodes per lion.
+for (i in 1:nind) {
+  epsilon[i] ~ dnorm(0, tau.p) T(-16, 16)
+  logit(p[i]) <- mu.p + epsilon[i]
+}
+
+# Latent alive-states.  This is the formulation JAGS handles well and NIMBLE
+# does not: 590 x 64 discrete latent nodes, which NIMBLE gives individual
+# binary samplers and spends essentially all its time on.
+for (i in 1:nind) {
+  z[i, f[i]] <- 1
+  for (t in (f[i] + 1):n.occasions) {
+    z[i, t] ~ dbern(phi[age[i, t - 1], sex[i], area[i, t - 1]] * z[i, t - 1])
+    y[i, t] ~ dbern(p[i] * z[i, t])
+  }
+}
+
+# Annualise per-interval survival.  surv.exp and surv.exp.cub are supplied as
+# data so the exponents follow the number of occasions per year set in
+# R/01_capture_histories.R.
+for (s in 1:2) {
+  for (r in 1:n.region) {
+    surv[1, s, r] <- pow(phi[1, s, r], surv.exp.cub)
+    for (a in 2:nageclass) {
+      surv[a, s, r] <- pow(phi[a, s, r], surv.exp)
+    }
+  }
+}
+
+
+# -----------------------------------------------------------------------------
+# FECUNDITY COMPONENT
+# Zero-inflated Poisson for first-year cubs per adult female per year.  The
+# zero inflation is real biology: a female with surviving cubs from the
+# previous year does not conceive.
+# -----------------------------------------------------------------------------
+
+alpha ~ dnorm(0, 0.01)
+psi ~ dunif(0, 1)
+
+gamma[1] <- 0                # corner constraint: stratum 1 is the intercept
+for (r in 2:n.region) {
+  gamma[r] ~ dnorm(0, 0.1) T(-10, 10)
+}
+
+for (i in 1:n.fec) {
+  k[i] ~ dbern(psi)
+  log(lambda[i]) <- alpha + gamma[region[i]]
+  mu.f[i] <- lambda[i] * k[i] + 0.00001
+  C[i] ~ dpois(mu.f[i])
+}
+
+# DEPARTURE 2: fecundity per stratum is the analytic ZIP mean rather than the
+# average of realised mu.f over a hard-coded row range
+# (fec.prot1 <- mean(mu.f[1:74]) in the published code).  Same quantity in
+# expectation, without the Monte Carlo noise from the latent k[i], and without
+# depending on the data staying sorted by stratum.
+for (r in 1:n.region) {
+  fec[r] <- psi * exp(alpha + gamma[r])
+}
+
+
+# -----------------------------------------------------------------------------
+# POPULATION COMPONENT
+# Leslie projection ("growth in place": no immigration or emigration), seven
+# one-year age classes (ages 0, 1, 2, 3, 4, 5, 6+), by sex and stratum.
+# -----------------------------------------------------------------------------
+
+# DEPARTURE 5: the projection runs through n.burn years before the first study
+# year, and only overall scale is free per stratum rather than a separate
+# abundance for each age class and sex.  Flat priors on 28 starting abundances
+# put the model far from the stable age distribution (~41% of animals sit in
+# the 6+ class), and a deterministic projection then works that transient off
+# over many years.  Without the burn-in this model produced a spurious decline
+# from 599 to 207 animals and forced sigma.c to 73 against a bound of 100.
+for (r in 1:n.region) {
+  N1[r] ~ dunif(N.lower, N.upper)
+  for (a in 1:7) {
+    N.f[a, 1, r] <- N1[r]
+    N.m[a, 1, r] <- N1[r]
+  }
+
+  for (j in 1:(n.proj - 1)) {
+    # DEPARTURE 3: cubs are produced by adult FEMALES aged 3+ and split between
+    # the sexes.  The published code derives female cubs from adult females and
+    # male cubs from adult MALES using the same rate; since C[i] counts cubs of
+    # both sexes per female, that doubles recruitment and ties male recruitment
+    # to the number of adult males.
+    N.f[1, j + 1, r] <- (N.f[4, j, r] + N.f[5, j, r] + N.f[6, j, r] +
+                         N.f[7, j, r]) * fec[r] * cub.sex.ratio
+    N.m[1, j + 1, r] <- (N.f[4, j, r] + N.f[5, j, r] + N.f[6, j, r] +
+                         N.f[7, j, r]) * fec[r] * (1 - cub.sex.ratio)
+
+    # DEPARTURE 4: survival is applied to the age classes it was estimated for.
+    # The CJS classes are two years wide (cub 0-1.99, subadult 2-3.99, prime
+    # 4-5.99, old 6+), so cub survival covers ages 0->1 AND 1->2, subadult
+    # 2->3 and 3->4, prime 4->5 and 5->6.  The published code applies cub
+    # survival once and shifts every later class a year early.
+    N.f[2, j + 1, r] <- N.f[1, j, r] * surv[1, 1, r]
+    N.f[3, j + 1, r] <- N.f[2, j, r] * surv[1, 1, r]
+    N.f[4, j + 1, r] <- N.f[3, j, r] * surv[2, 1, r]
+    N.f[5, j + 1, r] <- N.f[4, j, r] * surv[2, 1, r]
+    N.f[6, j + 1, r] <- N.f[5, j, r] * surv[3, 1, r]
+    N.f[7, j + 1, r] <- N.f[6, j, r] * surv[3, 1, r] +
+                        N.f[7, j, r] * surv[4, 1, r]
+
+    N.m[2, j + 1, r] <- N.m[1, j, r] * surv[1, 2, r]
+    N.m[3, j + 1, r] <- N.m[2, j, r] * surv[1, 2, r]
+    N.m[4, j + 1, r] <- N.m[3, j, r] * surv[2, 2, r]
+    N.m[5, j + 1, r] <- N.m[4, j, r] * surv[2, 2, r]
+    N.m[6, j + 1, r] <- N.m[5, j, r] * surv[3, 2, r]
+    N.m[7, j + 1, r] <- N.m[6, j, r] * surv[3, 2, r] +
+                        N.m[7, j, r] * surv[4, 2, r]
+  }
+}
+
+# Observation model.  Pop[t] holds the closed-capture estimates; years dropped
+# by the survey-effort restriction arrive as NA and contribute no likelihood
+# term.  Uncertainty in those estimates is not propagated -- sigma.c absorbs
+# it, following Creel et al.
+sigma.c ~ dunif(0.5, 100)
+tau.c <- pow(sigma.c, -2)
+
+for (t in 1:n.occ) {
+  Ntot[t] <- sum(N.f[1:7, idx.obs[t], 1:n.region]) +
+             sum(N.m[1:7, idx.obs[t], 1:n.region])
+  Pop[t] ~ dnorm(Ntot[t], tau.c)
+}
+
+
+# -----------------------------------------------------------------------------
+# DERIVED QUANTITIES
+# -----------------------------------------------------------------------------
+
+for (t in 1:n.occ) {
+  for (r in 1:n.region) {
+    Nprot[r, t] <- sum(N.f[1:7, idx.obs[t], r]) + sum(N.m[1:7, idx.obs[t], r])
+  }
+  Density[t] <- Ntot[t] / Area
+}
+
+for (t in 1:(n.occ - 1)) {
+  for (r in 1:n.region) {
+    lambda.prot[r, t] <- Nprot[r, t + 1] / Nprot[r, t]
+  }
+  lambda.tot[t] <- Ntot[t + 1] / Ntot[t]
+}
+
+for (a in 1:nageclass) {
+  for (s in 1:2) {
+    for (r in 1:n.region) {
+      surv.annual[a, s, r] <- surv[a, s, r]
+    }
+  }
+}
+
+}

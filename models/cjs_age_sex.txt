@@ -1,0 +1,34 @@
+
+model {
+  # Priors for age-sex specific survival
+  # 4 age classes x 2 sexes = 8 survival parameters
+  for (a in 1:4){
+    for (s in 1:2){
+      phi[a,s] ~ dunif(0, 1)
+    }
+  }
+  
+  # Constant detection probability
+  p.const ~ dunif(0, 1)
+  
+  # Assign detection probabilities
+  for (i in 1:nind){
+    for (t in f[i]:(nyears-1)){
+      p[i,t] <- p.const
+    }
+  }
+  
+  # Likelihood
+  for (i in 1:nind){
+    # Define latent state at first capture
+    z[i,f[i]] <- 1
+    for (t in (f[i]+1):nyears){ 
+    
+      # State process: survival depends on age class at t-1 and sex
+      z[i,t] ~ dbern(z[i,t-1] * phi[age[i,t-1], sex[i]])
+      
+      # Observation process
+      y[i,t] ~ dbern(z[i,t] * p[i,t-1])
+    }
+  }
+}

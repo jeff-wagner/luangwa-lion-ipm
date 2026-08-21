@@ -1,0 +1,84 @@
+
+Attaching package: 'dplyr'
+
+The following objects are masked from 'package:stats':
+
+    filter, lag
+
+The following objects are masked from 'package:base':
+
+    intersect, setdiff, setequal, union
+
+occasion scale: monthly -> 8 occasions per year
+
+=== pooled fit: 16 years, M = 11300, 8 occasions ===
+
+
+=== population estimates ===
+ year n_known   M N_median  N_mean   N_sd N_lower N_upper mean_p sigma Rhat_N
+ 2008      84 420      334 330.646 55.029     221     417  0.024 1.337  1.016
+ 2009      99 495      165 167.229 18.356     137     209  0.117 1.337  1.004
+ 2010     100 500      144 145.070 12.675     124     174  0.172 1.337  1.009
+ 2011     120 600      202 204.516 21.598     169     254  0.113 1.337  1.011
+ 2012      91 455      189 192.573 28.254     147     258  0.072 1.337  1.001
+ 2013     121 605      161 162.303 11.060     144     187  0.215 1.337  1.004
+ 2014     169 845      195 195.956  7.448     183     212  0.360 1.337  1.005
+ 2015     156 780      212 213.390 13.602     190     243  0.201 1.337  1.007
+ 2016     172 860      293 295.443 25.433     253     351  0.110 1.337  1.002
+ 2017     196 980      223 223.417  7.463     211     240  0.388 1.337  1.009
+ 2018     198 990      237 237.722  9.827     221     259  0.313 1.337  1.003
+ 2019     183 915      226 226.904 10.629     209     250  0.277 1.337  1.004
+ 2020     166 830      206 207.343 10.310     190     230  0.271 1.337  1.011
+ 2021     123 615      185 186.310 15.925     160     222  0.151 1.337  1.015
+ 2022     149 745      189 190.005 10.609     172     213  0.253 1.337  1.002
+ 2023     133 665      194 195.998 15.960     169     231  0.164 1.337  1.004
+ ceiling_hit below_known converged
+        TRUE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+       FALSE       FALSE      TRUE
+
+=== checks ===
+Rhat >= 1.1 (not converged)                    ok
+N posterior near augmentation ceiling          **  2008
+N median below known individuals               ok
+sigma pressing its prior bound (> 4 of 5)      ok
+
+Raise AUG_FACTOR and re-run the flagged years: the augmentation
+ceiling is truncating the posterior, so N is underestimated.
+
+=== capture-frequency fit ===
+observed counts inside the 95% predictive interval: 121 of 128 
+ year times_detected observed rep_mean rep_lower rep_upper inside
+ 2008              2        5     16.1         9        24  FALSE
+ 2010              6       11      5.5         2        10  FALSE
+ 2014              5       12     20.2        13        29  FALSE
+ 2016              3       43     26.5        18        36  FALSE
+ 2019              4       38     26.0        17        35  FALSE
+ 2022              7       15      7.9         3        13  FALSE
+ 2023              4       26     14.4         8        22  FALSE
+
+wrote diagnostics PDF
+
+Pop[t] for the IPM state-space component:
+2008 2009 2010 2011 2012 2013 2014 2015 2016 2017 2018 2019 2020 2021 2022 2023 
+ 334  165  144  202  189  161  195  212  293  223  237  226  206  185  189  194 
+
+Saved output/*_monthly_pooled.{RDS,csv,pdf}
+Pass Pop (and n.occ = 16) into the IPM.  Creel et al. also
+divide by the area occupied to get density -- supply that separately.
+Warning message:
+In arrows(g$times_detected, g$rep_lower, g$times_detected, g$rep_upper,  :
+  zero-length arrow is of indeterminate angle and so skipped

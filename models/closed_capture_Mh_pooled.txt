@@ -1,0 +1,49 @@
+model {
+  # Mh closed capture fit to all years at once.
+  #
+  # Year-specific inclusion probability, year-specific mean detection, but a
+  # SINGLE individual-heterogeneity SD shared across years.  Individual
+  # variation in detectability is a property of the study system -- some lions
+  # are collared or live beside a road, others do not -- rather than something
+  # that is reinvented each year.  Sharing it stops a sparsely sampled year
+  # from positing an extreme heterogeneity distribution and a large phantom
+  # population, which is what happens when each year is fit on its own.
+  #
+  # Individuals are stacked across years; yr[i] gives the year of row i, and
+  # start[t]/end[t] delimit each year's block.
+
+  sigma ~ dunif(0, 5)
+  tau <- pow(sigma, -2)
+  sigma2 <- pow(sigma, 2)
+
+  for (t in 1:nyears){
+    omega[t] ~ dunif(0, 1)
+    mean.p[t] ~ dunif(0, 1)
+    mu[t] <- log(mean.p[t] / (1 - mean.p[t]))
+  }
+
+  for (i in 1:M){
+    z[i] ~ dbern(omega[yr[i]])
+    eps[i] ~ dnorm(0, tau)T(-16, 16)
+    logit(p[i]) <- mu[yr[i]] + eps[i]
+    p.eff[i] <- z[i] * p[i]
+
+    for (j in 1:T){
+      yaug[i,j] ~ dbern(p.eff[i])
+      yrep[i,j] ~ dbern(p.eff[i])
+    }
+    freq.rep[i] <- sum(yrep[i,])
+  }
+
+  # Replicated capture-frequency distribution, per year.  The observed
+  # counterpart is fixed data and is computed in R.
+  for (t in 1:nyears){
+    for (k in 1:T){
+      for (i in start[t]:end[t]){
+        ind.rep[i,k] <- equals(freq.rep[i], k)
+      }
+      frep[t,k] <- sum(ind.rep[start[t]:end[t], k])
+    }
+    N[t] <- sum(z[start[t]:end[t]])
+  }
+}
