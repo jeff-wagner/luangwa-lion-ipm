@@ -107,6 +107,27 @@ for (r in 1:n.region) {
 # one-year age classes (ages 0, 1, 2, 3, 4, 5, 6+), by sex and stratum.
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# MOVEMENT BETWEEN STRATA
+# -----------------------------------------------------------------------------
+# The reason this branch exists.  Without movement the two strata are closed
+# sub-populations, so a survival difference forces their composition to drift,
+# and the model cannot reproduce the stable composition that is actually
+# observed except by distorting the vital rates.
+#
+# Annual transition rates are estimated from the capture histories: of lion-
+# years where the stratum was observed in both year t and year t+1, n12 of n1
+# moved from inside the park to outside, and n21 of n2 moved the other way.
+psi12 ~ dunif(0, 1)     # inside -> outside, annual
+psi21 ~ dunif(0, 1)     # outside -> inside, annual
+
+n12 ~ dbin(psi12, n1)
+n21 ~ dbin(psi21, n2)
+
+# composition the movement rates alone would settle on, for comparison with
+# what is observed -- a check that movement really is what sets composition
+prop.equil <- psi21 / (psi12 + psi21)
+
 # DEPARTURE 5: the projection runs through n.burn years before the first study
 # year, and only overall scale is free per stratum rather than a separate
 # abundance for each age class and sex.  Flat priors on 28 starting abundances
@@ -114,44 +135,61 @@ for (r in 1:n.region) {
 # the 6+ class), and a deterministic projection then works that transient off
 # over many years.  Without the burn-in this model produced a spurious decline
 # from 599 to 207 animals and forced sigma.c to 73 against a bound of 100.
+# With movement in the projection the burn-in also lets the stratum composition
+# settle to its movement equilibrium before the first study year.
 for (r in 1:n.region) {
   N1[r] ~ dunif(N.lower, N.upper)
   for (a in 1:7) {
     N.f[a, 1, r] <- N1[r]
     N.m[a, 1, r] <- N1[r]
   }
+}
 
-  for (j in 1:(n.proj - 1)) {
+for (j in 1:(n.proj - 1)) {
+  for (r in 1:n.region) {
+    # --- reproduction and survival, within the stratum the lion is in --------
     # DEPARTURE 3: cubs are produced by adult FEMALES aged 3+ and split between
     # the sexes.  The published code derives female cubs from adult females and
     # male cubs from adult MALES using the same rate; since C[i] counts cubs of
     # both sexes per female, that doubles recruitment and ties male recruitment
     # to the number of adult males.
-    N.f[1, j + 1, r] <- (N.f[4, j, r] + N.f[5, j, r] + N.f[6, j, r] +
-                         N.f[7, j, r]) * fec[r] * cub.sex.ratio
-    N.m[1, j + 1, r] <- (N.f[4, j, r] + N.f[5, j, r] + N.f[6, j, r] +
-                         N.f[7, j, r]) * fec[r] * (1 - cub.sex.ratio)
+    Sf[1, j, r] <- (N.f[4, j, r] + N.f[5, j, r] + N.f[6, j, r] +
+                    N.f[7, j, r]) * fec[r] * cub.sex.ratio
+    Sm[1, j, r] <- (N.f[4, j, r] + N.f[5, j, r] + N.f[6, j, r] +
+                    N.f[7, j, r]) * fec[r] * (1 - cub.sex.ratio)
 
     # DEPARTURE 4: survival is applied to the age classes it was estimated for.
     # The CJS classes are two years wide (cub 0-1.99, subadult 2-3.99, prime
     # 4-5.99, old 6+), so cub survival covers ages 0->1 AND 1->2, subadult
     # 2->3 and 3->4, prime 4->5 and 5->6.  The published code applies cub
     # survival once and shifts every later class a year early.
-    N.f[2, j + 1, r] <- N.f[1, j, r] * surv[1, 1, r]
-    N.f[3, j + 1, r] <- N.f[2, j, r] * surv[1, 1, r]
-    N.f[4, j + 1, r] <- N.f[3, j, r] * surv[2, 1, r]
-    N.f[5, j + 1, r] <- N.f[4, j, r] * surv[2, 1, r]
-    N.f[6, j + 1, r] <- N.f[5, j, r] * surv[3, 1, r]
-    N.f[7, j + 1, r] <- N.f[6, j, r] * surv[3, 1, r] +
-                        N.f[7, j, r] * surv[4, 1, r]
+    Sf[2, j, r] <- N.f[1, j, r] * surv[1, 1, r]
+    Sf[3, j, r] <- N.f[2, j, r] * surv[1, 1, r]
+    Sf[4, j, r] <- N.f[3, j, r] * surv[2, 1, r]
+    Sf[5, j, r] <- N.f[4, j, r] * surv[2, 1, r]
+    Sf[6, j, r] <- N.f[5, j, r] * surv[3, 1, r]
+    Sf[7, j, r] <- N.f[6, j, r] * surv[3, 1, r] +
+                   N.f[7, j, r] * surv[4, 1, r]
 
-    N.m[2, j + 1, r] <- N.m[1, j, r] * surv[1, 2, r]
-    N.m[3, j + 1, r] <- N.m[2, j, r] * surv[1, 2, r]
-    N.m[4, j + 1, r] <- N.m[3, j, r] * surv[2, 2, r]
-    N.m[5, j + 1, r] <- N.m[4, j, r] * surv[2, 2, r]
-    N.m[6, j + 1, r] <- N.m[5, j, r] * surv[3, 2, r]
-    N.m[7, j + 1, r] <- N.m[6, j, r] * surv[3, 2, r] +
-                        N.m[7, j, r] * surv[4, 2, r]
+    Sm[2, j, r] <- N.m[1, j, r] * surv[1, 2, r]
+    Sm[3, j, r] <- N.m[2, j, r] * surv[1, 2, r]
+    Sm[4, j, r] <- N.m[3, j, r] * surv[2, 2, r]
+    Sm[5, j, r] <- N.m[4, j, r] * surv[2, 2, r]
+    Sm[6, j, r] <- N.m[5, j, r] * surv[3, 2, r]
+    Sm[7, j, r] <- N.m[6, j, r] * surv[3, 2, r] +
+                   N.m[7, j, r] * surv[4, 2, r]
+  }
+
+  # --- then movement, applied to the survivors -----------------------------
+  # One rate for all ages and both sexes.  Cubs move with their pride rather
+  # than dispersing independently, so applying the same rate to them is
+  # reasonable; treating male and female dispersal as equal is a simplification
+  # worth relaxing if the sex-specific transition counts support it.
+  for (a in 1:7) {
+    N.f[a, j + 1, 1] <- Sf[a, j, 1] * (1 - psi12) + Sf[a, j, 2] * psi21
+    N.f[a, j + 1, 2] <- Sf[a, j, 2] * (1 - psi21) + Sf[a, j, 1] * psi12
+    N.m[a, j + 1, 1] <- Sm[a, j, 1] * (1 - psi12) + Sm[a, j, 2] * psi21
+    N.m[a, j + 1, 2] <- Sm[a, j, 2] * (1 - psi21) + Sm[a, j, 1] * psi12
   }
 }
 
@@ -162,25 +200,32 @@ for (r in 1:n.region) {
 sigma.c ~ dunif(0.5, 100)
 tau.c <- pow(sigma.c, -2)
 
-# Only the TOTAL population is modelled as an observed quantity.  Stratum-
-# specific abundance and growth are deliberately not reported: the projection
-# treats the two strata as closed sub-populations, but lions move between them
-# constantly -- of transitions between successive detections, 11.7% of
-# inside-park lions move outside and 33.9% of outside lions move inside, and
-# 234 of 590 lions changed stratum during the study.  The equilibrium
-# composition implied by movement alone is 0.744 inside against 0.72 observed,
-# so composition is set by dispersal rather than by differential demography.
-#
-# A stratum-specific lambda from a projection with no dispersal term therefore
-# conflates demography with movement whatever its convergence looks like.  The
-# protection effect is estimated where it is identified -- on survival
-# (beta.prot) and fecundity (gamma) -- and abundance is projected in aggregate.
-#
-# The movement-explicit version is on the `movement-between-strata` branch.
 for (t in 1:n.occ) {
-  Ntot[t] <- sum(N.f[1:7, idx.obs[t], 1:n.region]) +
-             sum(N.m[1:7, idx.obs[t], 1:n.region])
+  for (r in 1:n.region) {
+    Nprot[r, t] <- sum(N.f[1:7, idx.obs[t], r]) + sum(N.m[1:7, idx.obs[t], r])
+  }
+  Ntot[t] <- sum(Nprot[1:n.region, t])
+
+  # (i) total population size, from the closed-capture model
   Pop[t] ~ dnorm(Ntot[t], tau.c)
+
+  # (ii) composition of the detected sample.  Pop[t] observes only the TOTAL,
+  # so on its own it leaves the split between strata unidentified.  n.in[t] of
+  # the n.seen[t] individually identified lions were inside the park in year t.
+  #
+  # On main this observation destroyed the fit, because the projection had no
+  # movement term and the model could only match a stable composition by
+  # distorting the vital rates.  With movement in the projection, composition
+  # is set by psi12/psi21 as it is in the real population, and this observation
+  # should inform the split without fighting the demography.  That is the
+  # hypothesis this branch tests.
+  #
+  # Assumes detection does not differ between strata: 2.11 detections per lion
+  # per year inside against 2.08 outside (paired difference 0.08, 95% CI -0.12
+  # to 0.28, p = 0.43).  Years where monitoring did not cover both strata are
+  # passed as NA and contribute nothing -- see PROP_YEARS in R/04_ipm.R.
+  n.in[t] ~ dbin(prop.in[t], n.seen[t])
+  prop.in[t] <- Nprot[1, t] / Ntot[t]
 }
 
 
@@ -193,6 +238,9 @@ for (t in 1:n.occ) {
 }
 
 for (t in 1:(n.occ - 1)) {
+  for (r in 1:n.region) {
+    lambda.prot[r, t] <- Nprot[r, t + 1] / Nprot[r, t]
+  }
   lambda.tot[t] <- Ntot[t + 1] / Ntot[t]
 }
 
