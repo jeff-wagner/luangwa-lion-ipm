@@ -5,7 +5,7 @@
 #   data/lion_ipm_data.RDS                          capture histories, covariates
 #   output/Pop_estimates_monthly_independent.csv    closed-capture N per year
 # Output:
-#   output/ipm_samples.RDS, output/ipm_summary.csv, output/ipm_diagnostics.pdf
+#   output/ipm_samples<TAG>.RDS, ipm_summary<TAG>.csv, ipm_diagnostics<TAG>.pdf
 #
 # WHY JAGS AND NOT NIMBLE
 # The CJS component has nind x n.occasions = 37,760 discrete latent alive-state
@@ -62,6 +62,11 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 source("R/00_paths.R")
 
 MODEL_FILE <- "models/lion_ipm_jags.txt"
+
+# Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
+# with the branch -- without this the branch run would silently overwrite the
+# results main's report renders from.
+OUTPUT_TAG <- "_movement"
 
 # --- settings ---------------------------------------------------------------
 
@@ -387,11 +392,19 @@ saveRDS(
       N_THIN = N_THIN
     )
   ),
-  "output/ipm_samples.RDS"
+  sprintf("output/ipm_samples%s.RDS", OUTPUT_TAG)
 )
-write.csv(ipm_summary, "output/ipm_summary.csv", row.names = FALSE)
+write.csv(
+  ipm_summary,
+  sprintf("output/ipm_summary%s.csv", OUTPUT_TAG),
+  row.names = FALSE
+)
 
-pdf("output/ipm_diagnostics.pdf", width = 10, height = 7)
+pdf(
+  sprintf("output/ipm_diagnostics%s.pdf", OUTPUT_TAG),
+  width = 10,
+  height = 7
+)
 key <- intersect(
   c("beta.sex", "beta.prot", "psi", "alpha", "sigma.c", "sigma.p", "mean.p"),
   ipm_summary$parameter
@@ -418,4 +431,7 @@ lines(study_years, nt$q50, lwd = 2)
 points(study_years, Pop, pch = 16, col = "red")
 dev.off()
 
-cat("\nSaved output/ipm_samples.RDS, output/ipm_summary.csv, output/ipm_diagnostics.pdf\n")
+cat(sprintf(
+  "\nSaved output/ipm_{samples.RDS, summary.csv, diagnostics.pdf} tagged '%s'\n",
+  OUTPUT_TAG
+))
