@@ -5,14 +5,15 @@ following the methods of Creel et al. (2024), *Conservation Science and
 Practice*, "Changes in African lion demography and population growth with
 increased protection".
 
-The model has four components, estimated in a single joint likelihood:
+The model has five components, estimated in a single joint likelihood:
 
 | Component | Data | Estimates |
 |---|---|---|
 | Cormack–Jolly–Seber | `y[i,t]` capture histories | age-, sex- and protection-specific apparent survival |
 | Closed capture | `chc`, one history per year | annual population size, fit *outside* the IPM |
 | Zero-inflated Poisson | `C[i]` first-year cubs per adult female | protection-specific fecundity |
-| Gaussian state-space | `Pop[t]` | population size as a latent variable, and growth rate |
+| Gaussian state-space | `Pop[t]`, sample composition | population size as a latent variable, and growth rate |
+| Movement | annual stratum transitions | dispersal rates between strata |
 
 ## Layout
 
@@ -132,6 +133,16 @@ the survival and fecundity components still use all 16 years.
 
 Done: capture histories, covariates, fecundity data, closed-capture model, and
 the IPM (`R/04_ipm.R`, `models/lion_ipm_jags.txt`).
+
+**Dispersal.** The Leslie projection moves survivors between strata each year
+at rates estimated inside the IPM from the capture histories (11.6% inside to
+outside, 31.3% outside to inside). This matters: fitted without dispersal, the
+stratum-specific quantities were unidentified, and adding composition data to a
+no-dispersal projection distorted the vital rates instead. With dispersal, all
+175 monitored parameters converge and the vital rates are unchanged.
+Stratum-specific lambda then comes out identical to total lambda, because
+dispersal holds composition stationary -- so the report gives one growth rate,
+not two.
 
 **The IPM is fitted in JAGS, not NIMBLE.** The CJS component carries
 590 x 64 = 37,760 discrete latent alive-states. JAGS has specialised machinery
