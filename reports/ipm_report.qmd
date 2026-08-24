@@ -21,6 +21,18 @@ execute:
   message: false
 ---
 
+```{r rootdir}
+#| include: false
+# Run the remaining chunks from the repository root, so the paths below match
+# the ones used by the scripts in R/.
+#
+# This was previously handled by `execute-dir: project` in _quarto.yml, but
+# turning the folder into a Quarto project makes Quarto open a Deno KV cache
+# under .quarto/, and that fails with "ERROR: disk I/O error" on this drive.
+# Setting root.dir here needs no project file and no cache.
+knitr::opts_knit$set(root.dir = normalizePath(".."))
+```
+
 ```{r setup}
 library(dplyr)
 library(tidyr)
@@ -40,6 +52,9 @@ dat <- readRDS("data/lion_ipm_data.RDS")
 jd <- dat$jags.data
 fecd <- dat$jags.data.fec
 cc <- read.csv("output/Pop_estimates_monthly_independent.csv")
+
+# All posterior draws, chains pooled -- needed for the density figures
+draws <- as.matrix(ipm$samples)
 
 # pull a scalar parameter by name
 gv <- function(p, col = "mean") s[[col]][match(p, s$parameter)]
@@ -341,6 +356,72 @@ Only about `r round(100 * gv("psi"))`% of adult-female-years involved breeding (
 the previous year does not conceive. Among those that did breed, the Poisson
 mean was `r round(exp(gv("alpha")), 2)` cubs.
 
+# Posterior distributions
+
+Laid out as in Figure 3 of Creel et al.: fecundity on top, then annual apparent
+survival for each age class, with both sexes and both strata overlaid. Showing
+the full posterior rather than an interval makes the degree of overlap between
+strata visible — which is the quantity of interest when asking whether
+protection matters.
+
+```{r}
+#| label: fig-posteriors
+#| fig-cap: "Posterior distributions by protection level. (a) Adult female fecundity, as first-year cubs per female. (b) Annual apparent survival for the four age classes; within each panel the male distributions sit to the left of the female ones."
+#| fig-height: 8
+library(patchwork)
+
+fec_draws <- data.frame(
+  value = c(draws[, "fec[1]"], draws[, "fec[2]"]),
+  prot = rep(prot_labs, each = nrow(draws))
+)
+
+p_fec <- ggplot(fec_draws, aes(value, fill = prot, colour = prot)) +
+  geom_density(alpha = 0.45, linewidth = 0.5) +
+  scale_fill_manual(values = pal, name = NULL) +
+  scale_colour_manual(values = pal, name = NULL) +
+  labs(
+    x = "First-year cubs per adult female per year",
+    y = "Posterior density",
+    tag = "a"
+  )
+
+grid <- expand.grid(a = 1:4, sx = 1:2, pr = 1:2)
+surv_draws <- do.call(rbind, lapply(seq_len(nrow(grid)), function(k) {
+  a <- grid$a[k]
+  sx <- grid$sx[k]
+  pr <- grid$pr[k]
+  data.frame(
+    value = draws[, sprintf("surv.annual[%d,%d,%d]", a, sx, pr)],
+    age = age_labs[a],
+    sex = sex_labs[sx],
+    prot = prot_labs[pr]
+  )
+}))
+surv_draws$age <- factor(surv_draws$age, levels = age_labs)
+
+p_surv <- ggplot(
+  surv_draws,
+  aes(value, fill = prot, colour = prot, linetype = sex)
+) +
+  geom_density(alpha = 0.3, linewidth = 0.5) +
+  facet_wrap(~age, nrow = 2) +
+  scale_fill_manual(values = pal, name = NULL) +
+  scale_colour_manual(values = pal, name = NULL) +
+  scale_linetype_manual(
+    values = c(Female = "solid", Male = "22"),
+    name = NULL
+  ) +
+  labs(x = "Annual apparent survival", y = "Posterior density", tag = "b")
+
+p_fec / p_surv + plot_layout(heights = c(1, 2))
+```
+
+The separation between strata is consistent across all four age classes,
+because the model fits an additive protection effect on the logit scale with no
+age interaction — the panels show how that constant shift translates into
+different absolute gaps at different baseline survival rates. Fecundity, by
+contrast, shows two distributions that overlap almost entirely.
+
 # Population size and growth
 
 ```{r}
@@ -449,6 +530,90 @@ The Leslie projection assumes constant vital rates and no immigration or
 emigration ("growth in place"). $\lambda$ is therefore a property of the fitted
 demography, not an independent measurement of year-to-year change, and it
 cannot detect a real change in demographic rates through time.
+:::
+
+Laid out as in Figure 4 of Creel et al.: the growth-rate posterior, then the
+density trend with credible intervals.  Panel (a) covers the population as a
+whole rather than being split by protection level -- see the note below.
+
+```{r}
+#| label: fig-growth-density
+#| fig-cap: "(a) Posterior distribution for the annual population growth rate. Unlike Creel et al.'s Figure 4a this is not split by protection level — see the note below. (b) Density through time; points are posterior means and bars 95% credible intervals."
+#| fig-height: 8
+last_t <- length(sy) - 1
+
+lam_draws <- data.frame(
+  value = draws[, sprintf("lambda.tot[%d]", last_t)],
+  grp = "Whole population"
+)
+pal_lam <- c("Whole population" = "#333333")
+
+p_lam <- ggplot(lam_draws, aes(value, fill = grp, colour = grp)) +
+  geom_density(alpha = 0.4, linewidth = 0.5) +
+  geom_vline(xintercept = 1, linetype = 2, colour = "grey40") +
+  scale_fill_manual(values = pal_lam, name = NULL) +
+  scale_colour_manual(values = pal_lam, name = NULL) +
+  labs(x = expression(lambda), y = "Posterior density", tag = "a")
+
+dens <- grab("^Density")
+dens_df <- data.frame(
+  year = sy,
+  mean = dens$mean * 100,
+  lo = dens$q2.5 * 100,
+  hi = dens$q97.5 * 100
+)
+
+p_dens <- ggplot(dens_df, aes(year, mean)) +
+  geom_errorbar(
+    aes(ymin = lo, ymax = hi),
+    width = 0.25,
+    colour = "grey45",
+    linewidth = 0.5
+  ) +
+  geom_point(size = 2.4) +
+  scale_x_continuous(breaks = scales::pretty_breaks(8)) +
+  labs(
+    x = NULL,
+    y = expression("Lions per 100 km"^2),
+    tag = "b"
+  )
+
+p_lam / p_dens
+```
+
+::: {.callout-important appearance="simple"}
+**Why there is no protection-specific growth rate here.** Creel et al.'s
+Figure 4a shows λ separately for high and low protection. This model does not,
+and the reason is structural rather than a shortage of data.
+
+The Leslie projection treats the two strata as closed sub-populations, but
+Luangwa lions move between them constantly: of transitions between successive
+detections, **11.7% of inside-park lions moved outside and 33.9% of outside
+lions moved inside**, and 234 of 590 lions changed stratum during the study.
+The equilibrium composition implied by movement alone is **0.744 inside against
+0.72 observed** — so composition here is set by dispersal, not by differential
+demography. A stratum-specific λ from a projection with no dispersal term
+conflates the two.
+
+Estimating it anyway was tried. `Pop[t]` observes only the total, so the split
+was unidentified ($\hat{R}$ up to 1.26, effective sample sizes near 12). Adding
+a binomial observation on the composition of the detected sample fixed the
+identifiability and broke everything else: with no dispersal available, the
+model matched the observed composition by distorting the vital rates instead —
+`beta.prot` to −1.1, fecundity outside overtaking inside, and `sigma.c` out to
+~70 against ~30 here.
+
+The protection effect is therefore estimated where it *is* identified — on
+survival and fecundity — and abundance is projected in aggregate. A
+movement-explicit version is being developed on the `movement-between-strata`
+branch.
+:::
+
+::: {.callout-note appearance="simple"}
+Density in panel (b) uses the placeholder area of
+`r format(set.$AREA_KM2 %||% NA, big.mark = ",")` km². Only the vertical scale
+depends on it; the shape of the trend and the relative widths of the intervals
+do not.
 :::
 
 # Data behind the model

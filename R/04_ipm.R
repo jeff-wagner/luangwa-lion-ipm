@@ -125,6 +125,25 @@ if (sum(!is.na(Pop)) < 4) {
   stop("Too few usable population estimates to fit the state-space component.")
 }
 
+# NOTE: stratum-specific abundance and growth are deliberately NOT estimated.
+# Pop[t] observes only the total, so the split between strata is unidentified;
+# Nprot and lambda.prot previously came back with Rhat up to 1.26 and effective
+# sample sizes near 12.  The obvious fix -- a binomial observation on the
+# composition of the detected sample -- was tried and made things worse,
+# because the Leslie projection has no movement term while lions move between
+# strata constantly: of transitions between successive detections, 11.7% of
+# inside-park lions move outside and 33.9% of outside lions move inside, and
+# the equilibrium composition implied by movement alone is 0.744 inside
+# against 0.72 observed.  Forced to match a stable composition with no
+# dispersal available, the model distorted the vital rates instead:
+# beta.prot went to -1.1, fecundity outside overtook inside, and sigma.c blew
+# out to ~70.
+#
+# The protection effect is estimated where it IS identified -- on survival
+# (beta.prot) and fecundity (gamma).  The movement-explicit version, which
+# makes composition data usable and lambda.prot meaningful, is on the
+# `movement-between-strata` branch.
+
 n_region <- length(unique(as.vector(jd$area)))
 if (n_region < 2) {
   stop(
@@ -201,7 +220,7 @@ params <- c(
   "mean.ageclass", "beta.sex", "beta.prot", "phi", "surv.annual",
   "mean.p", "sigma.p",
   "alpha", "psi", "gamma", "fec",
-  "sigma.c", "Ntot", "Nprot", "Density", "lambda.prot", "lambda.tot"
+  "sigma.c", "Ntot", "Density", "lambda.tot"
 )
 
 # --- run --------------------------------------------------------------------
