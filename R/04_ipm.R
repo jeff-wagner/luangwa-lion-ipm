@@ -64,9 +64,9 @@ source("R/00_paths.R")
 MODEL_FILE <- "models/lion_ipm_jags.txt"
 
 # Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
-# with the branch -- without this the branch run would silently overwrite the
-# results main's report renders from.
-OUTPUT_TAG <- "_movement"
+# with the branch -- a tag keeps an exploratory run from silently overwriting the
+# results the report renders from.  Empty on main.
+OUTPUT_TAG <- ""
 
 # --- settings ---------------------------------------------------------------
 
