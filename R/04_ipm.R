@@ -5,7 +5,7 @@
 #   data/lion_ipm_data.RDS                          capture histories, covariates
 #   output/Pop_estimates_monthly_independent.csv    closed-capture N per year
 # Output:
-#   output/ipm_samples.RDS, output/ipm_summary.csv, output/ipm_diagnostics.pdf
+#   output/ipm_samples<TAG>.RDS, ipm_summary<TAG>.csv, ipm_diagnostics<TAG>.pdf
 #
 # WHY JAGS AND NOT NIMBLE
 # The CJS component has nind x n.occasions = 37,760 discrete latent alive-state
@@ -62,6 +62,11 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 source("R/00_paths.R")
 
 MODEL_FILE <- "models/lion_ipm_jags.txt"
+
+# Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
+# with the branch -- without this the branch run would silently overwrite the
+# results main's report renders from.
+OUTPUT_TAG <- "_movement"
 
 # --- settings ---------------------------------------------------------------
 
@@ -125,24 +130,80 @@ if (sum(!is.na(Pop)) < 4) {
   stop("Too few usable population estimates to fit the state-space component.")
 }
 
-# NOTE: stratum-specific abundance and growth are deliberately NOT estimated.
-# Pop[t] observes only the total, so the split between strata is unidentified;
-# Nprot and lambda.prot previously came back with Rhat up to 1.26 and effective
-# sample sizes near 12.  The obvious fix -- a binomial observation on the
-# composition of the detected sample -- was tried and made things worse,
-# because the Leslie projection has no movement term while lions move between
-# strata constantly: of transitions between successive detections, 11.7% of
-# inside-park lions move outside and 33.9% of outside lions move inside, and
-# the equilibrium composition implied by movement alone is 0.744 inside
-# against 0.72 observed.  Forced to match a stable composition with no
-# dispersal available, the model distorted the vital rates instead:
-# beta.prot went to -1.1, fecundity outside overtook inside, and sigma.c blew
-# out to ~70.
+# --- movement between strata ------------------------------------------------
+# Annual transition counts from the capture histories: of lion-years where the
+# stratum was observed in BOTH year t and year t+1, how many moved each way.
+# The model estimates psi12 and psi21 from these, and uses them to move
+# survivors between strata in the projection.
 #
-# The protection effect is estimated where it IS identified -- on survival
-# (beta.prot) and fecundity (gamma).  The movement-explicit version, which
-# makes composition data usable and lambda.prot meaningful, is on the
-# `movement-between-strata` branch.
+# Observed annual rates: 11.6% inside -> outside (133 of 1147 lion-years) and
+# 31.3% outside -> inside (101 of 323).  The equilibrium composition those
+# imply is 0.729 inside, against 0.72 actually observed -- which is the whole
+# argument for this branch: composition is set by dispersal, not by
+# differential demography.
+
+stratum_by_year <- matrix(NA_integer_, nrow(jd$y), n_occ)
+okey <- d$occasion_key
+for (t in seq_len(n_occ)) {
+  cols <- okey$occasion[okey$year == study_years[t]]
+  seen <- which(rowSums(jd$y[, cols, drop = FALSE]) > 0)
+  for (i in seen) {
+    det <- cols[jd$y[i, cols] == 1]
+    stratum_by_year[i, t] <- if (mean(jd$area[i, det] == 1) > 0.5) 1L else 2L
+  }
+}
+
+n12 <- n1 <- n21 <- n2 <- 0L
+for (t in seq_len(n_occ - 1)) {
+  a <- stratum_by_year[, t]
+  b <- stratum_by_year[, t + 1]
+  ok <- !is.na(a) & !is.na(b)
+  n1 <- n1 + sum(a[ok] == 1)
+  n2 <- n2 + sum(a[ok] == 2)
+  n12 <- n12 + sum(a[ok] == 1 & b[ok] == 2)
+  n21 <- n21 + sum(a[ok] == 2 & b[ok] == 1)
+}
+
+cat('\n--- annual movement between strata ---\n')
+cat('inside  -> outside:', n12, 'of', n1,
+    sprintf('(%.1f%%)', 100 * n12 / n1), '\n')
+cat('outside -> inside :', n21, 'of', n2,
+    sprintf('(%.1f%%)', 100 * n21 / n2), '\n')
+cat('implied equilibrium proportion inside:',
+    round((n21 / n2) / (n12 / n1 + n21 / n2), 3), '\n')
+
+# --- composition of the detected sample -------------------------------------
+# Second observation process.  On main this destroyed the fit because the
+# projection had no movement term; with movement it should inform the split
+# without fighting the demography.  Restricted to the window of stable spatial
+# coverage: over the full series the observed proportion inside falls from
+# 0.87 to 0.72 (-0.045 logit/yr, p = 0.0004), which is the study expanding
+# outward rather than the population moving.  Within 2016 onward there is no
+# trend (+0.039 logit/yr, p = 0.16).
+PROP_YEARS <- 2016:2023
+PROP_MIN_PER_STRATUM <- 5
+
+n_seen <- colSums(!is.na(stratum_by_year))
+n_in <- colSums(stratum_by_year == 1, na.rm = TRUE)
+n_out <- n_seen - n_in
+prop_ok <- n_in >= PROP_MIN_PER_STRATUM &
+  n_out >= PROP_MIN_PER_STRATUM &
+  study_years %in% PROP_YEARS
+n_in_obs <- ifelse(prop_ok, n_in, NA_integer_)
+
+cat('\n--- sample composition by stratum ---\n')
+print(
+  data.frame(
+    year = study_years,
+    detected = n_seen,
+    inside = n_in,
+    outside = n_out,
+    prop_inside = round(n_in / n_seen, 3),
+    used = prop_ok
+  ),
+  row.names = FALSE
+)
+cat('years contributing composition data:', sum(prop_ok), 'of', n_occ, '\n')
 
 n_region <- length(unique(as.vector(jd$area)))
 if (n_region < 2) {
@@ -173,6 +234,14 @@ jags.data <- list(
   n.fec = fecd$n,
   n.region = n_region,
   Pop = Pop,
+  # composition of the detected sample (second observation process)
+  n.in = n_in_obs,
+  n.seen = n_seen,
+  # annual movement counts, which identify psi12 and psi21
+  n12 = n12,
+  n1 = n1,
+  n21 = n21,
+  n2 = n2,
   n.occ = n_occ,
   n.proj = PROJECTION_BURN_IN + n_occ,
   idx.obs = PROJECTION_BURN_IN + seq_len(n_occ),
@@ -220,7 +289,9 @@ params <- c(
   "mean.ageclass", "beta.sex", "beta.prot", "phi", "surv.annual",
   "mean.p", "sigma.p",
   "alpha", "psi", "gamma", "fec",
-  "sigma.c", "Ntot", "Density", "lambda.tot"
+  "sigma.c", "Ntot", "Nprot", "prop.in", "Density",
+  "lambda.tot", "lambda.prot",
+  "psi12", "psi21", "prop.equil"
 )
 
 # --- run --------------------------------------------------------------------
@@ -321,11 +392,19 @@ saveRDS(
       N_THIN = N_THIN
     )
   ),
-  "output/ipm_samples.RDS"
+  sprintf("output/ipm_samples%s.RDS", OUTPUT_TAG)
 )
-write.csv(ipm_summary, "output/ipm_summary.csv", row.names = FALSE)
+write.csv(
+  ipm_summary,
+  sprintf("output/ipm_summary%s.csv", OUTPUT_TAG),
+  row.names = FALSE
+)
 
-pdf("output/ipm_diagnostics.pdf", width = 10, height = 7)
+pdf(
+  sprintf("output/ipm_diagnostics%s.pdf", OUTPUT_TAG),
+  width = 10,
+  height = 7
+)
 key <- intersect(
   c("beta.sex", "beta.prot", "psi", "alpha", "sigma.c", "sigma.p", "mean.p"),
   ipm_summary$parameter
@@ -352,4 +431,7 @@ lines(study_years, nt$q50, lwd = 2)
 points(study_years, Pop, pch = 16, col = "red")
 dev.off()
 
-cat("\nSaved output/ipm_samples.RDS, output/ipm_summary.csv, output/ipm_diagnostics.pdf\n")
+cat(sprintf(
+  "\nSaved output/ipm_{samples.RDS, summary.csv, diagnostics.pdf} tagged '%s'\n",
+  OUTPUT_TAG
+))
