@@ -1,0 +1,81 @@
+
+Attaching package: 'coda'
+
+The following object is masked from 'package:jagsUI':
+
+    traceplot
+
+
+Attaching package: 'dplyr'
+
+The following objects are masked from 'package:stats':
+
+    filter, lag
+
+The following objects are masked from 'package:base':
+
+    intersect, setdiff, setequal, union
+
+--- Pop[t] ---
+ year Pop
+ 2008  NA
+ 2009  NA
+ 2010 205
+ 2011  NA
+ 2012  NA
+ 2013 160
+ 2014 212
+ 2015 229
+ 2016  NA
+ 2017 240
+ 2018 237
+ 2019 203
+ 2020 188
+ 2021 182
+ 2022 223
+ 2023 206
+years contributing to the state-space likelihood: 11 of 16 
+
+--- annual movement between strata ---
+inside  -> outside: 98 of 1234 (7.9%) 
+outside -> inside : 73 of 236 (30.9%) 
+implied equilibrium proportion inside: 0.796 
+
+--- sample composition by stratum ---
+ year detected inside outside prop_inside  used
+ 2008       84     84       0       1.000 FALSE
+ 2009       99     92       7       0.929 FALSE
+ 2010      100     86      14       0.860 FALSE
+ 2011      120    102      18       0.850 FALSE
+ 2012       91     72      19       0.791 FALSE
+ 2013      121     99      22       0.818 FALSE
+ 2014      169    134      35       0.793 FALSE
+ 2015      156    128      28       0.821 FALSE
+ 2016      172    137      35       0.797  TRUE
+ 2017      196    140      56       0.714  TRUE
+ 2018      198    155      43       0.783  TRUE
+ 2019      183    147      36       0.803  TRUE
+ 2020      166    124      42       0.747  TRUE
+ 2021      123    106      17       0.862  TRUE
+ 2022      149    124      25       0.832  TRUE
+ 2023      133    105      28       0.789  TRUE
+years contributing composition data: 8 of 16 
+
+--- interval lengths ---
+bins per year: 4 
+interval lengths (fraction of a year): 0.167 0.1697 0.167 0.4961 
+they sum to: 0.9999  -- the old model assumed 0.25 each
+cub observable fraction: 0.8162 
+
+--- year random effects ---
+survival:  16 years, 64 occasions
+fecundity: 8 years ( 2008 - 2015 ),  331 female-years
+female-years per fecundity year: 22 27 37 44 44 45 60 52 
+
+running 3 chains x 60000 iterations (parallel)
+
+Processing function input....... 
+
+Done. 
+ 
+Beginning parallel processing using 3 cores. Console output will be suppressed.

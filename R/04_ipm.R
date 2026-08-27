@@ -66,7 +66,7 @@ MODEL_FILE <- "models/lion_ipm_jags.txt"
 # Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
 # with the branch -- a tag keeps an exploratory run from silently overwriting the
 # results the report renders from.  Empty on main.
-OUTPUT_TAG <- ""
+OUTPUT_TAG <- "_full"
 
 # --- settings ---------------------------------------------------------------
 
@@ -223,6 +223,36 @@ if (n_region < 2) {
 # fec.year[i]  year index of fecundity record i, within the years the LITTER
 #              data actually cover (2008-2015) rather than all study years.
 
+# --- interval lengths ------------------------------------------------------
+# The occasions are evenly spaced only within a year.  With four 2-month bins
+# the gaps between bin midpoints run 61, 62, 61 and 181 days, so the wet-season
+# interval is about three times the others.  int.len[k] is the length of
+# interval type k as a fraction of a year; int.type[t] says which type interval
+# t is.  Derived from the occasion midpoints, so they follow BIN_MONTHS.
+n_bins <- jd$n.occasions / n_occ
+gaps_years <- as.numeric(diff(d$occasion_key$mid_date)) / 365.25
+int_type <- ((seq_len(jd$n.occasions - 1) - 1) %% n_bins) + 1L
+int_len <- as.numeric(tapply(gaps_years, int_type, mean))
+n_int_type <- length(int_len)
+
+# Fraction of the 24-month cub age class during which cubs are detectable.
+# Recovered from the exponents script 01 computed, so the two stay consistent:
+# surv.exp / surv.exp.cub = (24 - CUB_UNSEEN_MONTHS) / 24.
+cub_obs_frac <- jd$surv.exp / jd$surv.exp.cub
+
+cat("
+--- interval lengths ---
+")
+cat("bins per year:", n_bins, "
+")
+cat("interval lengths (fraction of a year):", round(int_len, 4), "
+")
+cat("they sum to:", round(sum(int_len), 4),
+    " -- the old model assumed", round(1 / jd$surv.exp, 4), "each
+")
+cat("cub observable fraction:", round(cub_obs_frac, 4), "
+")
+
 nyears <- n_occ
 yr_occ <- match(d$occasion_key$year, study_years)
 stopifnot(length(yr_occ) == jd$n.occasions, !anyNA(yr_occ))
@@ -235,6 +265,13 @@ stopifnot(length(yr_occ) == jd$n.occasions, !anyNA(yr_occ))
 # FALSE -- the projection uses the year-effect-zero mean throughout.  The year
 #          effect then improves the CJS fit and the calibration of the survival
 #          estimates without giving the state-space component extra freedom.
+# Year random effects on/off.  This run isolates the protection-rule change, so
+# both are off and the model reduces to the one main fits -- reparameterised on
+# the annual scale, which is equivalent when the year effects are zero.
+USE_YEAR_RE_SURV <- 1
+USE_YEAR_RE_FEC  <- 1
+
+
 PROPAGATE_YEAR_EFFECTS <- FALSE
 
 surv_idx <- integer(PROJECTION_BURN_IN + n_occ - 1)
@@ -275,6 +312,12 @@ jags.data <- list(
   sex = jd$sex,
   area = jd$area,
   nyears = nyears,
+  int.type = int_type,
+  int.len = int_len,
+  n.int.type = n_int_type,
+  cub.obs.frac = cub_obs_frac,
+  use.yr.re = USE_YEAR_RE_SURV,
+  use.fec.re = USE_YEAR_RE_FEC,
   yr.occ = yr_occ,
   surv.idx = surv_idx,
   n.fec.yr = n_fec_yr,
@@ -334,9 +377,9 @@ inits <- function() {
     k = as.numeric(fecd$C > 0),
     sigma.c = runif(1, 5, 30),
     sigma.yr = runif(1, 0.05, 0.3),
-    eps.yr = rnorm(nyears, 0, 0.1),
+    eps.yr.raw = rnorm(nyears, 0, 0.1),
     sigma.fec.yr = runif(1, 0.05, 0.3),
-    eps.fec = rnorm(n_fec_yr, 0, 0.1),
+    eps.fec.raw = rnorm(n_fec_yr, 0, 0.1),
     N1 = rep(start_scale, n_region)
   )
 }
