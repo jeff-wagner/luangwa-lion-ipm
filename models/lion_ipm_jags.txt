@@ -40,8 +40,14 @@ beta.prot ~ dlogis(0, 1)     # effect of low protection
 # reportable -- between-year SD of annual survival on the logit scale.
 sigma.yr ~ dunif(0, 5)
 tau.yr <- pow(sigma.yr, -2)
+# use.yr.re is 0/1 data.  At 0 every year effect is exactly zero and the model
+# collapses to the constant-survival version -- which lets the same model file
+# serve both, so a run with year effects off is otherwise identical rather than
+# a different file that might have drifted.  sigma.yr then samples its prior
+# and should not be reported.
 for (u in 1:nyears) {
-  eps.yr[u] ~ dnorm(0, tau.yr)
+  eps.yr.raw[u] ~ dnorm(0, tau.yr)
+  eps.yr[u] <- eps.yr.raw[u] * use.yr.re
 }
 
 # Annual-scale linear predictor.  mean.ageclass is now logit ANNUAL survival.
@@ -64,14 +70,35 @@ for (a in 1:nageclass) {
   }
 }
 
-# Per-interval survival for the CJS: the root of annual survival.  Cubs use
-# their own exponent because they are undetectable for their first few months.
+# Per-interval survival for the CJS, as annual survival raised to the fraction
+# of a year that interval actually spans.
+#
+# The intervals are NOT equal.  With May-Jun, Jul-Aug, Sep-Oct and Nov-Dec
+# bins, the gaps between bin midpoints are about 61, 62, 61 and 181 days --
+# 0.167, 0.170, 0.167 and 0.496 of a year.  Treating all four as 1/4 of a year,
+# as the published model does, overstates survival across the long wet-season
+# gap and understates it across the three short dry-season ones.  The annual
+# total came out right (the exponents summed to 1), which is why the error is
+# easy to miss, but the per-interval rates were wrong and so was the way the
+# year effect and the age structure interacted with them.
+#
+# int.len[k] is the length of interval type k as a fraction of a year and
+# int.type[t] says which type interval t is; both are computed in R/04_ipm.R
+# from the occasion midpoints, so they follow BIN_MONTHS automatically.
+#
+# cub.obs.frac carries Creel et al.'s cub correction into this parameterisation:
+# cubs are undetectable for roughly the first 4.41 months of their 24-month age
+# class, so only 19.59/24 = 0.816 of the class is observable and the effective
+# exponent shrinks accordingly.  With four equal intervals this reproduces the
+# published 3.672-vs-3 ratio exactly.
 for (s in 1:2) {
   for (r in 1:n.region) {
     for (u in 1:nyears) {
-      phi[1, s, r, u] <- pow(ann[1, s, r, u], 1 / surv.exp.cub)
-      for (a in 2:nageclass) {
-        phi[a, s, r, u] <- pow(ann[a, s, r, u], 1 / surv.exp)
+      for (k in 1:n.int.type) {
+        phi[1, s, r, u, k] <- pow(ann[1, s, r, u], int.len[k] * cub.obs.frac)
+        for (a in 2:nageclass) {
+          phi[a, s, r, u, k] <- pow(ann[a, s, r, u], int.len[k])
+        }
       }
     }
   }
@@ -100,7 +127,10 @@ for (i in 1:nind) {
   z[i, f[i]] <- 1
   for (t in (f[i] + 1):n.occasions) {
     z[i, t] ~ dbern(
-      phi[age[i, t - 1], sex[i], area[i, t - 1], yr.occ[t - 1]] * z[i, t - 1]
+      phi[
+        age[i, t - 1], sex[i], area[i, t - 1],
+        yr.occ[t - 1], int.type[t - 1]
+      ] * z[i, t - 1]
     )
     y[i, t] ~ dbern(p[i] * z[i, t])
   }
@@ -153,7 +183,8 @@ for (r in 2:n.region) {
 sigma.fec.yr ~ dunif(0, 5)
 tau.fec.yr <- pow(sigma.fec.yr, -2)
 for (u in 1:n.fec.yr) {
-  eps.fec[u] ~ dnorm(0, tau.fec.yr)
+  eps.fec.raw[u] ~ dnorm(0, tau.fec.yr)
+  eps.fec[u] <- eps.fec.raw[u] * use.fec.re
 }
 
 for (i in 1:n.fec) {
@@ -179,7 +210,7 @@ for (i in 1:n.fec) {
 # mean and would bias the projection low whenever between-year variation is
 # appreciable.
 for (r in 1:n.region) {
-  fec[r] <- psi * exp(alpha + gamma[r] + 0.5 * pow(sigma.fec.yr, 2))
+  fec[r] <- psi * exp(alpha + gamma[r] + 0.5 * pow(sigma.fec.yr, 2) * use.fec.re)
 
   # year-specific fecundity, for reporting over the years that have data
   for (u in 1:n.fec.yr) {
