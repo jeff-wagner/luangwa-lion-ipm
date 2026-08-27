@@ -19,7 +19,7 @@ source("R/00_paths.R")
 
 zmb <- vect(WDPA_GDB, layer = WDPA_LAYER)
 summary(zmb)
-luangwa <- zmb[zmb$NAME_ENG %in% c("North Luangwa", "South Luangwa")]
+luangwa <- zmb[zmb$NAME_ENG %in% c("North Luangwa", "South Luangwa", "Luambe")]
 
 sightings <- read_csv("data/lion_sighting_points.csv")
 # State the CRS explicitly rather than relying on the points and the polygons

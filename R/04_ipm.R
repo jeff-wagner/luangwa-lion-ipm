@@ -213,6 +213,53 @@ if (n_region < 2) {
   )
 }
 
+# --- indices for the year random effects ------------------------------------
+# yr.occ[t]    year index (1..nyears) of CJS occasion t.  The survival interval
+#              from t-1 to t is attributed to the year of occasion t-1.
+# surv.idx[j]  which slice of surv.all the projection step j should use.
+#              Study-year steps point at that year; burn-in steps point at the
+#              extra slot nyears+1, which holds the year-effect-zero mean.
+#              JAGS cannot branch on a computed index, so this is built here.
+# fec.year[i]  year index of fecundity record i, within the years the LITTER
+#              data actually cover (2008-2015) rather than all study years.
+
+nyears <- n_occ
+yr_occ <- match(d$occasion_key$year, study_years)
+stopifnot(length(yr_occ) == jd$n.occasions, !anyNA(yr_occ))
+
+# Should the year effect flow into the projection, or only into the CJS fit?
+#
+# TRUE  -- the projection uses year-specific survival, so lambda varies by year.
+#          Scientifically the more interesting version, but it hands the model
+#          16 free year effects to fit 11 population observations with.
+# FALSE -- the projection uses the year-effect-zero mean throughout.  The year
+#          effect then improves the CJS fit and the calibration of the survival
+#          estimates without giving the state-space component extra freedom.
+PROPAGATE_YEAR_EFFECTS <- FALSE
+
+surv_idx <- integer(PROJECTION_BURN_IN + n_occ - 1)
+surv_idx[seq_len(PROJECTION_BURN_IN)] <- nyears + 1L # burn-in: use the mean
+surv_idx[(PROJECTION_BURN_IN + 1):length(surv_idx)] <- if (PROPAGATE_YEAR_EFFECTS) {
+  seq_len(length(surv_idx) - PROJECTION_BURN_IN) # study years 1..(n_occ-1)
+} else {
+  nyears + 1L # mean throughout
+}
+stopifnot(all(surv_idx >= 1), all(surv_idx <= nyears + 1))
+
+fec_years <- sort(unique(d$fec_data$year))
+n_fec_yr <- length(fec_years)
+fec_year_idx <- match(d$fec_data$year, fec_years)
+stopifnot(length(fec_year_idx) == fecd$n, !anyNA(fec_year_idx))
+
+cat("\n--- year random effects ---\n")
+cat("survival: ", nyears, "years,", jd$n.occasions, "occasions\n")
+cat(
+  "fecundity:", n_fec_yr, "years (",
+  min(fec_years), "-", max(fec_years), "), ",
+  fecd$n, "female-years\n"
+)
+cat("female-years per fecundity year:", table(fec_year_idx), "\n")
+
 # --- data bundle ------------------------------------------------------------
 # idx.obs maps study year t onto its column in the projection, which starts
 # PROJECTION_BURN_IN years before the study.  Passing it as data keeps the
@@ -227,6 +274,11 @@ jags.data <- list(
   age = jd$age,
   sex = jd$sex,
   area = jd$area,
+  nyears = nyears,
+  yr.occ = yr_occ,
+  surv.idx = surv_idx,
+  n.fec.yr = n_fec_yr,
+  fec.year = fec_year_idx,
   surv.exp = jd$surv.exp,
   surv.exp.cub = jd$surv.exp.cub,
   C = fecd$C,
@@ -281,6 +333,10 @@ inits <- function() {
     gamma = c(NA, rnorm(n_region - 1, 0, 0.3)),
     k = as.numeric(fecd$C > 0),
     sigma.c = runif(1, 5, 30),
+    sigma.yr = runif(1, 0.05, 0.3),
+    eps.yr = rnorm(nyears, 0, 0.1),
+    sigma.fec.yr = runif(1, 0.05, 0.3),
+    eps.fec = rnorm(n_fec_yr, 0, 0.1),
     N1 = rep(start_scale, n_region)
   )
 }
@@ -290,6 +346,7 @@ params <- c(
   "mean.p", "sigma.p",
   "alpha", "psi", "gamma", "fec",
   "sigma.c", "Ntot", "Nprot", "prop.in", "Density",
+  "sigma.yr", "eps.yr", "sigma.fec.yr", "eps.fec", "fec.yr",
   "lambda.tot", "lambda.prot",
   "psi12", "psi21", "prop.equil"
 )
