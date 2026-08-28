@@ -1,0 +1,187 @@
+
+Attaching package: 'coda'
+
+The following object is masked from 'package:jagsUI':
+
+    traceplot
+
+
+Attaching package: 'dplyr'
+
+The following objects are masked from 'package:stats':
+
+    filter, lag
+
+The following objects are masked from 'package:base':
+
+    intersect, setdiff, setequal, union
+
+--- Pop[t] ---
+ year Pop
+ 2008  NA
+ 2009  NA
+ 2010 205
+ 2011  NA
+ 2012  NA
+ 2013 160
+ 2014 212
+ 2015 229
+ 2016  NA
+ 2017 240
+ 2018 237
+ 2019 203
+ 2020 188
+ 2021 182
+ 2022 223
+ 2023 206
+years contributing to the state-space likelihood: 11 of 16 
+
+--- annual movement between strata ---
+inside  -> outside: 98 of 1234 (7.9%) 
+outside -> inside : 73 of 236 (30.9%) 
+implied equilibrium proportion inside: 0.796 
+
+--- sample composition by stratum ---
+ year detected inside outside prop_inside  used
+ 2008       84     84       0       1.000 FALSE
+ 2009       99     92       7       0.929 FALSE
+ 2010      100     86      14       0.860 FALSE
+ 2011      120    102      18       0.850 FALSE
+ 2012       91     72      19       0.791 FALSE
+ 2013      121     99      22       0.818 FALSE
+ 2014      169    134      35       0.793 FALSE
+ 2015      156    128      28       0.821 FALSE
+ 2016      172    137      35       0.797  TRUE
+ 2017      196    140      56       0.714  TRUE
+ 2018      198    155      43       0.783  TRUE
+ 2019      183    147      36       0.803  TRUE
+ 2020      166    124      42       0.747  TRUE
+ 2021      123    106      17       0.862  TRUE
+ 2022      149    124      25       0.832  TRUE
+ 2023      133    105      28       0.789  TRUE
+years contributing composition data: 8 of 16 
+
+--- interval lengths ---
+bins per year: 4 
+interval lengths (fraction of a year): 0.167 0.1697 0.167 0.4961 
+they sum to: 0.9999  -- the old model assumed 0.25 each
+cub observable fraction: 0.8162 
+
+--- year random effects ---
+survival:  16 years, 64 occasions
+fecundity: 8 years ( 2008 - 2015 ),  331 female-years
+female-years per fecundity year: 22 27 37 44 44 45 60 52 
+
+running 3 chains x 60000 iterations (parallel)
+
+Processing function input....... 
+
+Done. 
+ 
+Beginning parallel processing using 3 cores. Console output will be suppressed.
+
+Parallel processing completed.
+
+Calculating statistics....... 
+
+Done. 
+elapsed: 179.1 min
+
+=== convergence ===
+all monitored parameters Rhat <= 1.1
+minimum effective sample size (stochastic nodes): 409 
+
+--- annual apparent survival [ageclass, sex, protection] ---
+          parameter  mean    sd  q2.5   q50 q97.5  Rhat
+ surv.annual[1,1,1] 0.804 0.035 0.727 0.807 0.863 1.005
+ surv.annual[2,1,1] 0.877 0.024 0.824 0.880 0.917 1.001
+ surv.annual[3,1,1] 0.915 0.019 0.872 0.917 0.947 1.006
+ surv.annual[4,1,1] 0.855 0.022 0.807 0.858 0.892 1.004
+ surv.annual[1,2,1] 0.660 0.049 0.556 0.663 0.747 1.003
+ surv.annual[2,2,1] 0.771 0.038 0.689 0.775 0.837 1.001
+ surv.annual[3,2,1] 0.835 0.033 0.761 0.838 0.892 1.004
+ surv.annual[4,2,1] 0.735 0.038 0.650 0.738 0.800 1.002
+ surv.annual[1,1,2] 0.701 0.048 0.600 0.704 0.787 1.002
+ surv.annual[2,1,2] 0.803 0.037 0.724 0.806 0.867 1.000
+ surv.annual[3,1,2] 0.859 0.030 0.792 0.862 0.912 1.003
+ surv.annual[4,1,2] 0.770 0.035 0.695 0.774 0.831 1.001
+ surv.annual[1,2,2] 0.526 0.058 0.410 0.528 0.636 1.001
+ surv.annual[2,2,2] 0.658 0.053 0.549 0.660 0.754 1.000
+ surv.annual[3,2,2] 0.743 0.048 0.638 0.745 0.829 1.001
+ surv.annual[4,2,2] 0.613 0.052 0.504 0.616 0.708 1.000
+
+--- effects on logit(phi) ---
+ parameter   mean    sd   q2.5    q50  q97.5  Rhat
+  beta.sex -0.758 0.112 -0.976 -0.756 -0.538 1.001
+ beta.prot -0.564 0.130 -0.817 -0.567 -0.308 1.001
+
+--- fecundity ---
+   parameter  mean    sd   q2.5   q50 q97.5  Rhat
+       alpha 0.772 0.105  0.557 0.778 0.966 1.003
+         psi 0.214 0.021  0.173 0.213 0.257 1.003
+    gamma[1] 0.000 0.000  0.000 0.000 0.000    NA
+    gamma[2] 0.130 0.216 -0.306 0.137 0.539 1.001
+      fec[1] 0.467 0.048  0.378 0.465 0.566 1.001
+      fec[2] 0.539 0.109  0.348 0.532 0.774 1.001
+ fec.yr[1,1] 0.478 0.065  0.364 0.473 0.622 1.002
+ fec.yr[2,1] 0.553 0.128  0.341 0.539 0.845 1.002
+ fec.yr[1,2] 0.471 0.070  0.346 0.466 0.622 1.001
+ fec.yr[2,2] 0.544 0.127  0.330 0.531 0.829 1.000
+ fec.yr[1,3] 0.468 0.066  0.348 0.465 0.608 1.002
+ fec.yr[2,3] 0.541 0.123  0.332 0.530 0.810 1.001
+ fec.yr[1,4] 0.479 0.069  0.362 0.473 0.633 1.001
+ fec.yr[2,4] 0.553 0.124  0.346 0.540 0.827 1.001
+ fec.yr[1,5] 0.459 0.066  0.328 0.458 0.592 1.002
+ fec.yr[2,5] 0.529 0.114  0.330 0.519 0.777 1.001
+ fec.yr[1,6] 0.478 0.064  0.367 0.473 0.621 1.001
+ fec.yr[2,6] 0.553 0.122  0.345 0.541 0.822 1.001
+ fec.yr[1,7] 0.463 0.061  0.348 0.461 0.592 1.001
+ fec.yr[2,7] 0.535 0.116  0.334 0.525 0.791 1.001
+ fec.yr[1,8] 0.482 0.067  0.369 0.476 0.635 1.002
+ fec.yr[2,8] 0.558 0.132  0.342 0.544 0.855 1.003
+
+--- total population size ---
+ parameter    mean     sd    q2.5     q50   q97.5  Rhat
+   Ntot[1] 195.718 21.159 156.457 194.767 239.884 1.001
+   Ntot[2] 209.257 20.238 171.547 208.495 251.610 1.001
+   Ntot[3] 208.282 17.303 175.335 207.913 243.974 1.001
+   Ntot[4] 201.387 15.669 171.738 200.882 234.274 1.000
+   Ntot[5] 191.262 13.668 165.085 190.983 219.338 1.001
+   Ntot[6] 189.775 11.736 166.823 189.666 213.483 1.001
+   Ntot[7] 193.496 10.994 171.333 193.658 214.967 1.001
+   Ntot[8] 204.887 10.979 182.426 205.050 225.872 1.000
+   Ntot[9] 222.298 11.771 198.804 222.303 245.282 1.000
+  Ntot[10] 219.820 11.046 197.806 220.022 241.319 1.000
+  Ntot[11] 220.591 10.954 199.048 220.528 242.547 1.001
+  Ntot[12] 217.194 10.761 196.621 216.939 239.272 1.000
+  Ntot[13] 219.111 11.473 197.386 218.721 242.767 1.001
+  Ntot[14] 204.009 11.468 182.175 203.771 227.416 1.000
+  Ntot[15] 211.580 12.941 186.678 211.331 237.935 1.000
+  Ntot[16] 194.362 14.314 166.450 194.190 223.257 1.000
+
+--- population growth rate ---
+      parameter  mean    sd  q2.5   q50 q97.5  Rhat
+  lambda.tot[1] 1.071 0.045 0.983 1.072 1.158 1.000
+  lambda.tot[2] 0.998 0.044 0.906 0.999 1.079 1.000
+  lambda.tot[3] 0.968 0.042 0.879 0.970 1.047 1.000
+  lambda.tot[4] 0.951 0.042 0.865 0.952 1.030 1.000
+  lambda.tot[5] 0.994 0.041 0.910 0.995 1.070 1.001
+  lambda.tot[6] 1.020 0.034 0.951 1.021 1.084 1.001
+  lambda.tot[7] 1.059 0.030 0.999 1.060 1.117 1.000
+  lambda.tot[8] 1.085 0.031 1.025 1.086 1.143 1.000
+  lambda.tot[9] 0.989 0.031 0.925 0.990 1.048 1.001
+ lambda.tot[10] 1.004 0.032 0.941 1.005 1.066 1.000
+ lambda.tot[11] 0.985 0.033 0.918 0.986 1.047 1.000
+ lambda.tot[12] 1.009 0.032 0.946 1.010 1.070 1.001
+ lambda.tot[13] 0.932 0.036 0.858 0.933 1.000 1.000
+ lambda.tot[14] 1.037 0.036 0.966 1.038 1.106 1.000
+ lambda.tot[15] 0.919 0.044 0.831 0.920 1.000 1.001
+
+--- variance components ---
+    parameter   mean    sd   q2.5    q50  q97.5  Rhat
+      sigma.p  1.211 0.069  1.081  1.208  1.355 1.003
+      sigma.c 26.395 7.940 15.230 24.977 46.022 1.001
+     sigma.yr  0.506 0.193  0.225  0.472  0.981 1.002
+ sigma.fec.yr  0.100 0.087  0.003  0.078  0.323 1.006
+
+Saved output/ipm_{samples.RDS, summary.csv, diagnostics.pdf} tagged '_yrprop'

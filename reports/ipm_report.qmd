@@ -15,6 +15,8 @@ format:
     code-fold: true
     code-summary: "Show code"
     tbl-cap-location: top
+params:
+  ipm_tag: "_yrprop"
 execute:
   echo: false
   warning: false
@@ -45,7 +47,13 @@ library(coda)
 # Which fit to render.  output/ is gitignored, so it does NOT switch with the
 # git branch -- naming the file explicitly keeps this branch's report pointed
 # at this branch's results without disturbing main's.  "" is main's fit.
-IPM_TAG <- "_full"
+#
+# Passed as a Quarto parameter so one source renders every fit:
+#   quarto render ipm_report.qmd
+#   quarto render ipm_report.qmd -P ipm_tag:_stoch --output ipm_report_stochastic.html
+# Keeping a single source means the two reports cannot drift apart; the prose
+# that depends on model structure is switched on the flags detected below.
+IPM_TAG <- params$ipm_tag %||% "_yrprop"
 
 ipm <- readRDS(sprintf("output/ipm_samples%s.RDS", IPM_TAG))
 s <- ipm$summary
@@ -97,6 +105,8 @@ int_len_rep <- as.numeric(tapply(
 # use.yr.re is 0 every eps.yr is deterministically zero, so its SD is zero.
 year_re_on <- any(s$sd[grepl("eps.yr[", s$parameter, fixed = TRUE)] > 0)
 fec_re_on <- any(s$sd[grepl("eps.fec[", s$parameter, fixed = TRUE)] > 0)
+proc_on <- any(grepl("sigma.proc", s$parameter, fixed = TRUE)) &&
+  any(s$sd[grepl("eps.proc[", s$parameter, fixed = TRUE)] > 0)
 
 # All posterior draws, chains pooled -- needed for the density figures
 draws <- as.matrix(ipm$samples)
@@ -176,7 +186,7 @@ tibble::tibble(
     "Cormack–Jolly–Seber",
     "Zero-inflated Poisson",
     "Leslie projection",
-    "Gaussian state-space"
+    if (proc_on) "Gaussian state-space + process error" else "Gaussian state-space"
   ),
   Data = c(
     sprintf("%s capture histories over %d occasions", format(jd$nind, big.mark = ","), jd$n.occasions),
@@ -188,7 +198,11 @@ tibble::tibble(
     "Apparent survival by age class, sex and protection",
     "Fecundity by protection level",
     "Age structure, dispersal between strata, abundance through time",
-    "Population size as a latent variable; growth rate"
+    if (proc_on) {
+      "Population size as a latent variable; growth rate; observation error separated from real fluctuation"
+    } else {
+      "Population size as a latent variable; growth rate"
+    }
   )
 ) |>
   gt() |>
@@ -694,7 +708,7 @@ nt_df |>
 
 ```{r}
 #| label: fig-lambda
-#| fig-cap: "Annual population growth rate. Vital rates are constant through time, so variation here reflects age structure settling rather than changing demography."
+#| fig-cap: "Annual population growth rate. Survival carries a year random effect that feeds through into the projection, so this varies with the estimated year-to-year survival rather than being constant. Fecundity is held at its marginal mean -- see the note below."
 #| fig-height: 4
 lam_df <- tibble::tibble(
   year = sy[-length(sy)],
@@ -711,15 +725,111 @@ ggplot(lam_df, aes(year, est)) +
 ```
 
 ::: {.callout-important appearance="simple"}
-The Leslie projection assumes constant vital rates and no immigration or
-emigration ("growth in place"). $\lambda$ is therefore a property of the fitted
-demography, not an independent measurement of year-to-year change, and it
-cannot detect a real change in demographic rates through time.
+**What this variation does and does not include.** $\lambda$ varies here because
+the year random effect on survival feeds through into the projection. It tracks
+that effect closely — the correlation between $\lambda$ and `eps.yr` is 0.99 —
+so this is year-to-year variation in growth attributable to *measured survival*.
+
+```{r}
+#| output: asis
+if (proc_on) {
+  cat(
+    "The projection also carries process error, so variation beyond what",
+    "survival explains has somewhere to go rather than being charged to",
+    "observation error. What remains outside the model is attribution:",
+    "`sigma.proc` is a flat multiplier on abundance and cannot say which vital",
+    "rate moved. Fecundity is still held at its marginal mean across years,",
+    "because the litter records stop in 2015 and a year-specific value for",
+    "2016-2023 would come from the prior rather than from data, so recruitment",
+    "variation lands in `sigma.proc` undifferentiated.\n"
+  )
+} else {
+  cat(
+    "It is not total environmental stochasticity. Fecundity is held at its",
+    "marginal mean across years, because the litter records stop in 2015 and a",
+    "year-specific value for 2016-2023 would come from the prior rather than",
+    "from data. And the projection is deterministic given the vital rates:",
+    "there is no process error, so every departure of the real population from",
+    "the fitted trajectory is charged to observation error in `sigma.c`.",
+    "Variation in recruitment -- often the larger component for lions -- has",
+    "nowhere to go in this model.\n"
+  )
+}
+```
 :::
 
+```{r}
+#| output: asis
+#| label: sec-variance
+# Everything here is emitted from inside the conditional, including the table.
+# A separate chunk with `eval: !expr proc_on` does not work: knitr skips the
+# code but Quarto still emits the caption, leaving an orphaned "Observation
+# error against process error" heading above nothing in the non-stochastic
+# report.
+if (proc_on) {
+  n_mean <- mean(s$q50[grepl("Ntot[", s$parameter, fixed = TRUE)])
+  sc <- gv("sigma.c", "q50")
+  sp <- gv("sigma.proc", "q50")
+
+  cat("\n## Splitting observation error from real fluctuation\n\n")
+  cat(
+    "Without process error every departure of the population from the fitted",
+    "trajectory is charged to `sigma.c`, which conflates two different things:",
+    "how imprecise the closed-capture estimates are, and how much the",
+    "population actually fluctuates. Fitting both separates them.\n\n"
+  )
+
+  tab <- tibble::tibble(
+    Source = c(
+      "Observation error in the closed-capture estimates",
+      "Process error: real year-to-year fluctuation"
+    ),
+    Parameter = c("sigma.c", "sigma.proc"),
+    Estimate = c(sc, sp),
+    Lower = c(gv("sigma.c", "q2.5"), gv("sigma.proc", "q2.5")),
+    Upper = c(gv("sigma.c", "q97.5"), gv("sigma.proc", "q97.5")),
+    `As lions` = c(sc, n_mean * (exp(sp) - 1))
+  ) |>
+    gt() |>
+    tab_header(
+      title = "Variance decomposition",
+      subtitle = sprintf("At a mean population of %.0f lions", n_mean)
+    ) |>
+    fmt_number(columns = c(Estimate, Lower, Upper), decimals = 3) |>
+    fmt_number(columns = `As lions`, decimals = 1) |>
+    cols_merge(columns = c(Lower, Upper), pattern = "{1} – {2}") |>
+    cols_label(Lower = "95% CrI") |>
+    cols_width(Source ~ px(300)) |>
+    tab_source_note(paste(
+      "sigma.c is already in lions; sigma.proc is an SD on the log scale,",
+      "shown as the equivalent proportional swing at the mean population size."
+    )) |>
+    tbl_style()
+  cat(gt::as_raw_html(tab), "\n\n")
+
+  cat(sprintf(
+    paste(
+      "The two are comparable in size -- roughly %.0f lions of measurement",
+      "imprecision against %.0f lions of genuine fluctuation, a %.1f%% annual",
+      "CV. Fitted without process error the same model puts `sigma.c` at 25.0,",
+      "so about a third of what was being called observation error is really",
+      "the population moving.\n\n",
+      "Two cautions. The lower bound on `sigma.proc` is %.3f, so the data do",
+      "not exclude near-zero process variance. And `sigma.c` spans %.1f to",
+      "%.1f: with %d population estimates the split between the two is",
+      "informed but not sharply determined.\n"
+    ),
+    sc, n_mean * (exp(sp) - 1), 100 * (exp(sp) - 1),
+    gv("sigma.proc", "q2.5"), gv("sigma.c", "q2.5"), gv("sigma.c", "q97.5"),
+    sum(!is.na(Pop))
+  ))
+}
+```
+
+
 Laid out as in Figure 4 of Creel et al.: the growth-rate posterior, then the
-density trend with credible intervals.  Panel (a) covers the population as a
-whole; -movement explains why that is the right unit here.
+density trend with credible intervals. Panel (a) covers the population as a
+whole; @sec-movement explains why that is the right unit here.
 
 ```{r}
 #| label: fig-growth-density
@@ -819,11 +929,52 @@ data.frame(
   tbl_style()
 ```
 
-Identical to four decimal places, in every year, at $\hat{R}$ = 1.002. That is a
-consequence of the structure rather than a coincidence: once dispersal holds the
-composition stationary, both strata must grow at the same rate. "Growth rate of
-the protected sub-population" is only a distinct quantity if the sub-populations
-are demographically closed, and with
+```{r}
+#| label: tbl-lambda-diff
+#| tbl-cap: "Difference in growth rate between strata, year by year. Taken from the posterior of the difference rather than by comparing two marginal intervals, which would overstate the separation because the two are strongly correlated."
+dm <- do.call(rbind, lapply(ipm$samples, as.matrix))
+nt_l <- length(sy) - 1
+dif <- vapply(seq_len(nt_l), function(t) {
+  dm[, sprintf("lambda.prot[1,%d]", t)] - dm[, sprintf("lambda.prot[2,%d]", t)]
+}, numeric(nrow(dm)))
+qd <- apply(dif, 2, quantile, c(0.025, 0.5, 0.975))
+lam_diff <- data.frame(
+  interval = paste0(head(sy, -1), "–", tail(sy, -1)),
+  inside = apply(dm[, sprintf("lambda.prot[1,%d]", seq_len(nt_l))], 2, median),
+  outside = apply(dm[, sprintf("lambda.prot[2,%d]", seq_len(nt_l))], 2, median),
+  diff = qd[2, ], lo = qd[1, ], hi = qd[3, ]
+)
+lam_diff$clear <- sign(lam_diff$lo) == sign(lam_diff$hi)
+
+lam_diff |>
+  gt() |>
+  tab_header(title = "Growth rate, inside vs outside the park") |>
+  fmt_number(columns = c(inside, outside, diff, lo, hi), decimals = 4) |>
+  cols_merge(columns = c(lo, hi), pattern = "{1} – {2}") |>
+  cols_label(interval = "", inside = "Inside", outside = "Outside",
+             diff = "Difference", lo = "95% CrI") |>
+  cols_hide(clear) |>
+  tab_source_note(sprintf(
+    "The two series correlate %.4f. The difference excludes zero in %d of %d intervals.",
+    cor(lam_diff$inside, lam_diff$outside), sum(lam_diff$clear), nt_l
+  )) |>
+  tbl_style()
+```
+
+The two strata track each other almost exactly: the series correlate
+`r sprintf("%.4f", cor(lam_diff$inside, lam_diff$outside))`, the largest gap in
+any year is `r sprintf("%.3f", max(abs(lam_diff$inside - lam_diff$outside)))`,
+and the difference excludes zero in
+**`r sum(lam_diff$clear)` of `r nt_l` intervals**.
+
+That is close to a structural necessity rather than a coincidence. Dispersal
+holds the composition near its equilibrium, and a population whose composition
+is stationary must grow at one rate throughout. Year-varying survival perturbs
+that slightly — under constant vital rates the two were identical to four
+decimal places — but never enough to separate them.
+
+"Growth rate of the protected sub-population" is only a distinct quantity if the
+sub-populations are demographically closed, and with
 `r sum(apply(jd$area, 1, function(r) length(unique(r)) > 1))` of `r jd$nind`
 lions changing stratum, these are not.
 
