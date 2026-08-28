@@ -5,7 +5,7 @@
 #   data/lion_ipm_data.RDS                          capture histories, covariates
 #   output/Pop_estimates_monthly_independent.csv    closed-capture N per year
 # Output:
-#   output/ipm_samples.RDS, output/ipm_summary.csv, output/ipm_diagnostics.pdf
+#   output/ipm_samples<TAG>.RDS, ipm_summary<TAG>.csv, ipm_diagnostics<TAG>.pdf
 #
 # WHY JAGS AND NOT NIMBLE
 # The CJS component has nind x n.occasions = 37,760 discrete latent alive-state
@@ -62,6 +62,11 @@ invisible(lapply(required_packages, library, character.only = TRUE))
 source("R/00_paths.R")
 
 MODEL_FILE <- "models/lion_ipm_jags.txt"
+
+# Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
+# with the branch -- a tag keeps an exploratory run from silently overwriting the
+# results the report renders from.  Empty on main.
+OUTPUT_TAG <- "_stoch"
 
 # --- settings ---------------------------------------------------------------
 
@@ -125,24 +130,80 @@ if (sum(!is.na(Pop)) < 4) {
   stop("Too few usable population estimates to fit the state-space component.")
 }
 
-# NOTE: stratum-specific abundance and growth are deliberately NOT estimated.
-# Pop[t] observes only the total, so the split between strata is unidentified;
-# Nprot and lambda.prot previously came back with Rhat up to 1.26 and effective
-# sample sizes near 12.  The obvious fix -- a binomial observation on the
-# composition of the detected sample -- was tried and made things worse,
-# because the Leslie projection has no movement term while lions move between
-# strata constantly: of transitions between successive detections, 11.7% of
-# inside-park lions move outside and 33.9% of outside lions move inside, and
-# the equilibrium composition implied by movement alone is 0.744 inside
-# against 0.72 observed.  Forced to match a stable composition with no
-# dispersal available, the model distorted the vital rates instead:
-# beta.prot went to -1.1, fecundity outside overtook inside, and sigma.c blew
-# out to ~70.
+# --- movement between strata ------------------------------------------------
+# Annual transition counts from the capture histories: of lion-years where the
+# stratum was observed in BOTH year t and year t+1, how many moved each way.
+# The model estimates psi12 and psi21 from these, and uses them to move
+# survivors between strata in the projection.
 #
-# The protection effect is estimated where it IS identified -- on survival
-# (beta.prot) and fecundity (gamma).  The movement-explicit version, which
-# makes composition data usable and lambda.prot meaningful, is on the
-# `movement-between-strata` branch.
+# Observed annual rates: 11.6% inside -> outside (133 of 1147 lion-years) and
+# 31.3% outside -> inside (101 of 323).  The equilibrium composition those
+# imply is 0.729 inside, against 0.72 actually observed -- which is the whole
+# argument for this branch: composition is set by dispersal, not by
+# differential demography.
+
+stratum_by_year <- matrix(NA_integer_, nrow(jd$y), n_occ)
+okey <- d$occasion_key
+for (t in seq_len(n_occ)) {
+  cols <- okey$occasion[okey$year == study_years[t]]
+  seen <- which(rowSums(jd$y[, cols, drop = FALSE]) > 0)
+  for (i in seen) {
+    det <- cols[jd$y[i, cols] == 1]
+    stratum_by_year[i, t] <- if (mean(jd$area[i, det] == 1) > 0.5) 1L else 2L
+  }
+}
+
+n12 <- n1 <- n21 <- n2 <- 0L
+for (t in seq_len(n_occ - 1)) {
+  a <- stratum_by_year[, t]
+  b <- stratum_by_year[, t + 1]
+  ok <- !is.na(a) & !is.na(b)
+  n1 <- n1 + sum(a[ok] == 1)
+  n2 <- n2 + sum(a[ok] == 2)
+  n12 <- n12 + sum(a[ok] == 1 & b[ok] == 2)
+  n21 <- n21 + sum(a[ok] == 2 & b[ok] == 1)
+}
+
+cat('\n--- annual movement between strata ---\n')
+cat('inside  -> outside:', n12, 'of', n1,
+    sprintf('(%.1f%%)', 100 * n12 / n1), '\n')
+cat('outside -> inside :', n21, 'of', n2,
+    sprintf('(%.1f%%)', 100 * n21 / n2), '\n')
+cat('implied equilibrium proportion inside:',
+    round((n21 / n2) / (n12 / n1 + n21 / n2), 3), '\n')
+
+# --- composition of the detected sample -------------------------------------
+# Second observation process.  On main this destroyed the fit because the
+# projection had no movement term; with movement it should inform the split
+# without fighting the demography.  Restricted to the window of stable spatial
+# coverage: over the full series the observed proportion inside falls from
+# 0.87 to 0.72 (-0.045 logit/yr, p = 0.0004), which is the study expanding
+# outward rather than the population moving.  Within 2016 onward there is no
+# trend (+0.039 logit/yr, p = 0.16).
+PROP_YEARS <- 2016:2023
+PROP_MIN_PER_STRATUM <- 5
+
+n_seen <- colSums(!is.na(stratum_by_year))
+n_in <- colSums(stratum_by_year == 1, na.rm = TRUE)
+n_out <- n_seen - n_in
+prop_ok <- n_in >= PROP_MIN_PER_STRATUM &
+  n_out >= PROP_MIN_PER_STRATUM &
+  study_years %in% PROP_YEARS
+n_in_obs <- ifelse(prop_ok, n_in, NA_integer_)
+
+cat('\n--- sample composition by stratum ---\n')
+print(
+  data.frame(
+    year = study_years,
+    detected = n_seen,
+    inside = n_in,
+    outside = n_out,
+    prop_inside = round(n_in / n_seen, 3),
+    used = prop_ok
+  ),
+  row.names = FALSE
+)
+cat('years contributing composition data:', sum(prop_ok), 'of', n_occ, '\n')
 
 n_region <- length(unique(as.vector(jd$area)))
 if (n_region < 2) {
@@ -151,6 +212,97 @@ if (n_region < 2) {
     "identifiable.  Re-run R/02_sighting_protection.R then R/01_capture_histories.R."
   )
 }
+
+# --- indices for the year random effects ------------------------------------
+# yr.occ[t]    year index (1..nyears) of CJS occasion t.  The survival interval
+#              from t-1 to t is attributed to the year of occasion t-1.
+# surv.idx[j]  which slice of surv.all the projection step j should use.
+#              Study-year steps point at that year; burn-in steps point at the
+#              extra slot nyears+1, which holds the year-effect-zero mean.
+#              JAGS cannot branch on a computed index, so this is built here.
+# fec.year[i]  year index of fecundity record i, within the years the LITTER
+#              data actually cover (2008-2015) rather than all study years.
+
+# --- interval lengths ------------------------------------------------------
+# The occasions are evenly spaced only within a year.  With four 2-month bins
+# the gaps between bin midpoints run 61, 62, 61 and 181 days, so the wet-season
+# interval is about three times the others.  int.len[k] is the length of
+# interval type k as a fraction of a year; int.type[t] says which type interval
+# t is.  Derived from the occasion midpoints, so they follow BIN_MONTHS.
+n_bins <- jd$n.occasions / n_occ
+gaps_years <- as.numeric(diff(d$occasion_key$mid_date)) / 365.25
+int_type <- ((seq_len(jd$n.occasions - 1) - 1) %% n_bins) + 1L
+int_len <- as.numeric(tapply(gaps_years, int_type, mean))
+n_int_type <- length(int_len)
+
+# Fraction of the 24-month cub age class during which cubs are detectable.
+# Recovered from the exponents script 01 computed, so the two stay consistent:
+# surv.exp / surv.exp.cub = (24 - CUB_UNSEEN_MONTHS) / 24.
+cub_obs_frac <- jd$surv.exp / jd$surv.exp.cub
+
+cat("
+--- interval lengths ---
+")
+cat("bins per year:", n_bins, "
+")
+cat("interval lengths (fraction of a year):", round(int_len, 4), "
+")
+cat("they sum to:", round(sum(int_len), 4),
+    " -- the old model assumed", round(1 / jd$surv.exp, 4), "each
+")
+cat("cub observable fraction:", round(cub_obs_frac, 4), "
+")
+
+nyears <- n_occ
+yr_occ <- match(d$occasion_key$year, study_years)
+stopifnot(length(yr_occ) == jd$n.occasions, !anyNA(yr_occ))
+
+# Should the year effect flow into the projection, or only into the CJS fit?
+#
+# TRUE  -- the projection uses year-specific survival, so lambda varies by year.
+#          Scientifically the more interesting version, but it hands the model
+#          16 free year effects to fit 11 population observations with.
+# FALSE -- the projection uses the year-effect-zero mean throughout.  The year
+#          effect then improves the CJS fit and the calibration of the survival
+#          estimates without giving the state-space component extra freedom.
+# Year random effects on/off.  This run isolates the protection-rule change, so
+# both are off and the model reduces to the one main fits -- reparameterised on
+# the annual scale, which is equivalent when the year effects are zero.
+USE_YEAR_RE_SURV <- 1
+USE_YEAR_RE_FEC  <- 1
+
+
+PROPAGATE_YEAR_EFFECTS <- TRUE
+
+# Environmental stochasticity in the projection.  Fitted alongside the survival
+# year effect deliberately: eps.yr carries variation traceable to measured
+# survival, eps.proc picks up the residual, which is where recruitment
+# stochasticity would show.  The two are near-confounded and may not separate --
+# see the note in the model file.
+USE_PROCESS_ERROR <- 1
+
+surv_idx <- integer(PROJECTION_BURN_IN + n_occ - 1)
+surv_idx[seq_len(PROJECTION_BURN_IN)] <- nyears + 1L # burn-in: use the mean
+surv_idx[(PROJECTION_BURN_IN + 1):length(surv_idx)] <- if (PROPAGATE_YEAR_EFFECTS) {
+  seq_len(length(surv_idx) - PROJECTION_BURN_IN) # study years 1..(n_occ-1)
+} else {
+  nyears + 1L # mean throughout
+}
+stopifnot(all(surv_idx >= 1), all(surv_idx <= nyears + 1))
+
+fec_years <- sort(unique(d$fec_data$year))
+n_fec_yr <- length(fec_years)
+fec_year_idx <- match(d$fec_data$year, fec_years)
+stopifnot(length(fec_year_idx) == fecd$n, !anyNA(fec_year_idx))
+
+cat("\n--- year random effects ---\n")
+cat("survival: ", nyears, "years,", jd$n.occasions, "occasions\n")
+cat(
+  "fecundity:", n_fec_yr, "years (",
+  min(fec_years), "-", max(fec_years), "), ",
+  fecd$n, "female-years\n"
+)
+cat("female-years per fecundity year:", table(fec_year_idx), "\n")
 
 # --- data bundle ------------------------------------------------------------
 # idx.obs maps study year t onto its column in the projection, which starts
@@ -166,6 +318,21 @@ jags.data <- list(
   age = jd$age,
   sex = jd$sex,
   area = jd$area,
+  nyears = nyears,
+  int.type = int_type,
+  int.len = int_len,
+  n.int.type = n_int_type,
+  cub.obs.frac = cub_obs_frac,
+  use.proc = USE_PROCESS_ERROR,
+  # process error applies over the study years only, not the burn-in, which
+  # exists to settle the age structure with no data to inform shocks
+  proc.on = as.integer(surv_idx <= nyears),
+  use.yr.re = USE_YEAR_RE_SURV,
+  use.fec.re = USE_YEAR_RE_FEC,
+  yr.occ = yr_occ,
+  surv.idx = surv_idx,
+  n.fec.yr = n_fec_yr,
+  fec.year = fec_year_idx,
   surv.exp = jd$surv.exp,
   surv.exp.cub = jd$surv.exp.cub,
   C = fecd$C,
@@ -173,6 +340,14 @@ jags.data <- list(
   n.fec = fecd$n,
   n.region = n_region,
   Pop = Pop,
+  # composition of the detected sample (second observation process)
+  n.in = n_in_obs,
+  n.seen = n_seen,
+  # annual movement counts, which identify psi12 and psi21
+  n12 = n12,
+  n1 = n1,
+  n21 = n21,
+  n2 = n2,
   n.occ = n_occ,
   n.proj = PROJECTION_BURN_IN + n_occ,
   idx.obs = PROJECTION_BURN_IN + seq_len(n_occ),
@@ -212,6 +387,12 @@ inits <- function() {
     gamma = c(NA, rnorm(n_region - 1, 0, 0.3)),
     k = as.numeric(fecd$C > 0),
     sigma.c = runif(1, 5, 30),
+    sigma.proc = runif(1, 0.02, 0.12),
+    eps.proc.raw = rnorm(PROJECTION_BURN_IN + n_occ - 1, 0, 0.05),
+    sigma.yr = runif(1, 0.05, 0.3),
+    eps.yr.raw = rnorm(nyears, 0, 0.1),
+    sigma.fec.yr = runif(1, 0.05, 0.3),
+    eps.fec.raw = rnorm(n_fec_yr, 0, 0.1),
     N1 = rep(start_scale, n_region)
   )
 }
@@ -220,7 +401,11 @@ params <- c(
   "mean.ageclass", "beta.sex", "beta.prot", "phi", "surv.annual",
   "mean.p", "sigma.p",
   "alpha", "psi", "gamma", "fec",
-  "sigma.c", "Ntot", "Density", "lambda.tot"
+  "sigma.c", "Ntot", "Nprot", "prop.in", "Density",
+  "sigma.yr", "eps.yr", "sigma.fec.yr", "eps.fec", "fec.yr",
+  "sigma.proc", "eps.proc",
+  "lambda.tot", "lambda.prot",
+  "psi12", "psi21", "prop.equil"
 )
 
 # --- run --------------------------------------------------------------------
@@ -314,6 +499,13 @@ saveRDS(
       AREA_KM2 = AREA_KM2,
       CUB_SEX_RATIO = CUB_SEX_RATIO,
       PROJECTION_BURN_IN = PROJECTION_BURN_IN,
+      PROTECTION_RULE_NOTE = "set in R/01_capture_histories.R",
+      USE_YEAR_RE_SURV = USE_YEAR_RE_SURV,
+      USE_YEAR_RE_FEC = USE_YEAR_RE_FEC,
+      PROPAGATE_YEAR_EFFECTS = PROPAGATE_YEAR_EFFECTS,
+      USE_PROCESS_ERROR = USE_PROCESS_ERROR,
+      INT_LEN = int_len,
+      CUB_OBS_FRAC = cub_obs_frac,
       PARALLEL_CHAINS = PARALLEL_CHAINS,
       N_CHAINS = N_CHAINS,
       N_ITER = N_ITER,
@@ -321,11 +513,19 @@ saveRDS(
       N_THIN = N_THIN
     )
   ),
-  "output/ipm_samples.RDS"
+  sprintf("output/ipm_samples%s.RDS", OUTPUT_TAG)
 )
-write.csv(ipm_summary, "output/ipm_summary.csv", row.names = FALSE)
+write.csv(
+  ipm_summary,
+  sprintf("output/ipm_summary%s.csv", OUTPUT_TAG),
+  row.names = FALSE
+)
 
-pdf("output/ipm_diagnostics.pdf", width = 10, height = 7)
+pdf(
+  sprintf("output/ipm_diagnostics%s.pdf", OUTPUT_TAG),
+  width = 10,
+  height = 7
+)
 key <- intersect(
   c("beta.sex", "beta.prot", "psi", "alpha", "sigma.c", "sigma.p", "mean.p"),
   ipm_summary$parameter
@@ -352,4 +552,7 @@ lines(study_years, nt$q50, lwd = 2)
 points(study_years, Pop, pch = 16, col = "red")
 dev.off()
 
-cat("\nSaved output/ipm_samples.RDS, output/ipm_summary.csv, output/ipm_diagnostics.pdf\n")
+cat(sprintf(
+  "\nSaved output/ipm_{samples.RDS, summary.csv, diagnostics.pdf} tagged '%s'\n",
+  OUTPUT_TAG
+))

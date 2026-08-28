@@ -15,6 +15,8 @@ format:
     code-fold: true
     code-summary: "Show code"
     tbl-cap-location: top
+params:
+  ipm_tag: "_yrprop"
 execute:
   echo: false
   warning: false
@@ -42,7 +44,18 @@ library(coda)
 
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
-ipm <- readRDS("output/ipm_samples.RDS")
+# Which fit to render.  output/ is gitignored, so it does NOT switch with the
+# git branch -- naming the file explicitly keeps this branch's report pointed
+# at this branch's results without disturbing main's.  "" is main's fit.
+#
+# Passed as a Quarto parameter so one source renders every fit:
+#   quarto render ipm_report.qmd
+#   quarto render ipm_report.qmd -P ipm_tag:_stoch --output ipm_report_stochastic.html
+# Keeping a single source means the two reports cannot drift apart; the prose
+# that depends on model structure is switched on the flags detected below.
+IPM_TAG <- params$ipm_tag %||% "_yrprop"
+
+ipm <- readRDS(sprintf("output/ipm_samples%s.RDS", IPM_TAG))
 s <- ipm$summary
 sy <- ipm$study_years
 Pop <- ipm$Pop
@@ -52,6 +65,48 @@ dat <- readRDS("data/lion_ipm_data.RDS")
 jd <- dat$jags.data
 fecd <- dat$jags.data.fec
 cc <- read.csv("output/Pop_estimates_monthly_independent.csv")
+
+# Observed movement and interval lengths, recomputed from the data bundle the
+# same way R/04_ipm.R does, so the report cannot quote stale hard-coded values
+# if the protection rule or the occasion structure changes.
+okey <- dat$occasion_key
+stratum_by_year <- matrix(NA_integer_, nrow(jd$y), length(sy))
+for (t in seq_along(sy)) {
+  cols <- okey$occasion[okey$year == sy[t]]
+  seen <- which(rowSums(jd$y[, cols, drop = FALSE]) > 0)
+  for (i in seen) {
+    det <- cols[jd$y[i, cols] == 1]
+    stratum_by_year[i, t] <- if (mean(jd$area[i, det] == 1) > 0.5) 1L else 2L
+  }
+}
+mv <- list(n12 = 0L, n1 = 0L, n21 = 0L, n2 = 0L)
+for (t in seq_len(length(sy) - 1)) {
+  a <- stratum_by_year[, t]
+  b <- stratum_by_year[, t + 1]
+  ok <- !is.na(a) & !is.na(b)
+  mv$n1 <- mv$n1 + sum(a[ok] == 1)
+  mv$n2 <- mv$n2 + sum(a[ok] == 2)
+  mv$n12 <- mv$n12 + sum(a[ok] == 1 & b[ok] == 2)
+  mv$n21 <- mv$n21 + sum(a[ok] == 2 & b[ok] == 1)
+}
+obs_p12 <- mv$n12 / mv$n1
+obs_p21 <- mv$n21 / mv$n2
+obs_equil <- obs_p21 / (obs_p12 + obs_p21)
+obs_prop_in <- mean(stratum_by_year == 1, na.rm = TRUE)
+
+n_bins_rep <- jd$n.occasions / length(sy)
+int_len_rep <- as.numeric(tapply(
+  as.numeric(diff(okey$mid_date)) / 365.25,
+  ((seq_len(jd$n.occasions - 1) - 1) %% n_bins_rep) + 1,
+  mean
+))
+# Detect whether year effects were on from the samples rather than the settings
+# list, so this works for fits saved before the switches were recorded.  When
+# use.yr.re is 0 every eps.yr is deterministically zero, so its SD is zero.
+year_re_on <- any(s$sd[grepl("eps.yr[", s$parameter, fixed = TRUE)] > 0)
+fec_re_on <- any(s$sd[grepl("eps.fec[", s$parameter, fixed = TRUE)] > 0)
+proc_on <- any(grepl("sigma.proc", s$parameter, fixed = TRUE)) &&
+  any(s$sd[grepl("eps.proc[", s$parameter, fixed = TRUE)] > 0)
 
 # All posterior draws, chains pooled -- needed for the density figures
 draws <- as.matrix(ipm$samples)
@@ -111,7 +166,7 @@ tbl_style <- function(x) {
 ```
 
 ::: {.callout-note appearance="minimal"}
-Generated from `output/ipm_samples.RDS`.
+Generated from `output/ipm_samples`r if (nchar(IPM_TAG)) IPM_TAG else ""``.RDS`.
 `r set.$N_CHAINS %||% 3` chains × `r format(set.$N_ITER, big.mark = ",")` iterations,
 burn-in `r format(set.$N_BURNIN, big.mark = ",")`, thin `r set.$N_THIN`.
 :::
@@ -131,7 +186,7 @@ tibble::tibble(
     "Cormack–Jolly–Seber",
     "Zero-inflated Poisson",
     "Leslie projection",
-    "Gaussian state-space"
+    if (proc_on) "Gaussian state-space + process error" else "Gaussian state-space"
   ),
   Data = c(
     sprintf("%s capture histories over %d occasions", format(jd$nind, big.mark = ","), jd$n.occasions),
@@ -142,8 +197,12 @@ tibble::tibble(
   Estimates = c(
     "Apparent survival by age class, sex and protection",
     "Fecundity by protection level",
-    "Age structure and abundance through time",
-    "Population size as a latent variable; growth rate"
+    "Age structure, dispersal between strata, abundance through time",
+    if (proc_on) {
+      "Population size as a latent variable; growth rate; observation error separated from real fluctuation"
+    } else {
+      "Population size as a latent variable; growth rate"
+    }
   )
 ) |>
   gt() |>
@@ -158,21 +217,77 @@ tibble::tibble(
 **Occasions.** Four 2-month bins per year (May–Jun, Jul–Aug, Sep–Oct, Nov–Dec)
 give `r jd$n.occasions` occasions across `r length(sy)` years. Creel et al.
 used three bins covering May–Oct; the Luangwa season runs later, and the fourth
-bin raises retention from roughly 75% to 90% of individual-months. Per-interval
-survival is annualised as $\phi^{`r jd$surv.exp`}$, and
-$\phi^{`r round(jd$surv.exp.cub, 3)`}$ for cubs, which are undetectable for
-their first few months.
+bin raises retention from roughly 75% to 90% of individual-months.
 
-**Protection.** Every sighting was overlaid on the WDPA park boundary. Each
-lion was assigned to a protected status per occasion, which was carried forward across occasions when
-it was not seen. `r sum(apply(jd$area, 1, function(r) length(unique(r)) > 1))`
-of `r jd$nind` lions changed protected status during the study, which is what separates
-the protection effect from fixed differences between locations.
+Survival is estimated on the **annual** scale, and the per-interval value the
+CJS needs is derived from it. That ordering matters twice over. The intervals
+are not equal — the gaps between bin midpoints run
+`r paste(sprintf("%.3f", int_len_rep), collapse = ", ")` of a year, the last
+spanning the wet season — so treating each as a quarter of a year, as the
+published model does, overstates survival across the long gap and understates
+it across the three short ones. And a year random effect placed on
+per-interval survival is not identifiable, because per-interval survival sits
+close to 1 where the likelihood is flat; on the annual scale it is.
+
+**Protection.** Every sighting was overlaid on the WDPA park boundary, and each
+lion classified by the majority of **all its sightings in a year**, applied to
+every occasion in that year. An occasion-level majority was tried first, but
+44.9% of those classifications rested on a single sighting against 25.4% at the
+annual level, so one opportunistic excursion outside the boundary could define
+a whole 2-month bin and then propagate through carry-forward. Ties are broken
+by a coin flip, which makes the assignment mildly seed-dependent.
+
+`r sum(apply(jd$area, 1, function(r) length(unique(r)) > 1))` of `r jd$nind`
+lions changed protected status during the study, which is what separates the
+protection effect from fixed differences between locations. The change of rule
+moved 5.5% of lion-occasions but left every estimate essentially untouched —
+`beta.prot` shifted by 0.027, a fifth of its posterior SD.
 
 **Fecundity** is first-year cubs per adult female per year. Litter counts and
 sizes are observed; maternal identity was known for only a third of litters, so
 litters were allocated within their pride — named mothers first, the remainder
 at random among the other adult females, one each.
+
+**Movement.** The projection is not a pair of closed sub-populations. Lions move
+between strata constantly, and the model estimates annual transition rates from
+lion-years where the stratum was observed in both year *t* and *t+1*, then moves
+survivors accordingly. This matters more than it might appear — see
+@sec-movement.
+
+```{r}
+#| label: tbl-movement
+#| tbl-cap: "Movement between strata. The model estimates the transition rates; the observed column is the raw count from the capture histories and is not fitted to directly, so the agreement is a check rather than a tautology."
+mv <- s[match(c("psi12", "psi21", "prop.equil"), s$parameter), ]
+tibble::tibble(
+  Quantity = c(
+    "Annual P(move outside | inside)",
+    "Annual P(move inside | outside)",
+    "Equilibrium proportion inside"
+  ),
+  Estimate = mv$q50,
+  Lower = mv$q2.5,
+  Upper = mv$q97.5,
+  Observed = c(obs_p12, obs_p21, obs_equil)
+) |>
+  gt() |>
+  tab_header(
+    title = "Dispersal between strata",
+    subtitle = "Estimated inside the IPM, against the raw capture-history counts"
+  ) |>
+  fmt_number(columns = c(Estimate, Lower, Upper, Observed), decimals = 3) |>
+  cols_merge(columns = c(Lower, Upper), pattern = "{1} – {2}") |>
+  cols_label(Lower = "95% CrI") |>
+  cols_width(Quantity ~ px(280)) |>
+  tab_source_note(
+    "Rates apply to all ages and both sexes. Cubs move with their pride rather than dispersing independently, so a shared rate is reasonable for them; treating male and female dispersal as equal is a simplification worth relaxing."
+  ) |>
+  tbl_style()
+```
+
+The equilibrium composition implied by these rates --
+`r sprintf("%.3f", gv("prop.equil", "q50"))` inside -- matches the
+`r sprintf("%.3f", obs_prop_in)` actually observed. Composition here is set by
+dispersal, not by differential demography.
 
 # Headline results
 
@@ -422,6 +537,90 @@ age interaction — the panels show how that constant shift translates into
 different absolute gaps at different baseline survival rates. Fecundity, by
 contrast, shows two distributions that overlap almost entirely.
 
+# Between-year variation
+
+Survival and fecundity each carry a year random effect, on the annual logit and
+log scales respectively. Both are shrunk toward zero by the data rather than
+imposed.
+
+```{r}
+#| label: fig-yeareffects
+#| fig-cap: "Year random effect on annual survival, on the logit scale. Points are posterior medians, bars 95% credible intervals; a year whose interval clears zero is filled."
+#| fig-height: 4
+ey <- s[grepl("eps.yr[", s$parameter, fixed = TRUE), ]
+ey <- ey[order(as.integer(gsub("[^0-9]", "", ey$parameter))), ]
+ey_df <- data.frame(
+  year = sy,
+  est = ey$q50,
+  lo = ey$q2.5,
+  hi = ey$q97.5
+)
+ey_df$clear <- sign(ey_df$lo) == sign(ey_df$hi)
+
+ggplot(ey_df, aes(year, est)) +
+  geom_hline(yintercept = 0, linetype = 2, colour = "grey40") +
+  geom_linerange(aes(ymin = lo, ymax = hi), colour = "grey45") +
+  geom_point(aes(fill = clear), shape = 21, size = 2.6, colour = "grey20") +
+  scale_fill_manual(values = c(`TRUE` = "#b2182b", `FALSE` = "white"),
+                    guide = "none") +
+  scale_x_continuous(breaks = scales::pretty_breaks(8)) +
+  labs(x = NULL, y = "Year effect on logit(annual survival)")
+```
+
+```{r}
+#| label: tbl-varcomp
+#| tbl-cap: "Variance components. sigma.yr and sigma.fec.yr are the between-year SDs of survival and fecundity on their respective link scales."
+vc <- s[s$parameter %in% c("sigma.yr", "sigma.fec.yr", "sigma.p", "sigma.c"), ]
+vc$label <- c(
+  sigma.yr = "Between-year SD, survival (logit)",
+  sigma.fec.yr = "Between-year SD, fecundity (log)",
+  sigma.p = "Between-individual SD, detection (logit)",
+  sigma.c = "Sampling SD, population estimates"
+)[vc$parameter]
+vc |>
+  select(label, q50, q2.5, q97.5, Rhat, n.eff) |>
+  gt() |>
+  tab_header(title = "Variance components") |>
+  fmt_number(columns = c(q50, q2.5, q97.5), decimals = 3) |>
+  fmt_number(columns = Rhat, decimals = 3) |>
+  fmt_number(columns = n.eff, decimals = 0) |>
+  cols_merge(columns = c(q2.5, q97.5), pattern = "{1} – {2}") |>
+  cols_label(label = "", q50 = "Median", q2.5 = "95% CrI") |>
+  cols_width(label ~ px(300)) |>
+  tbl_style()
+```
+
+`sigma.yr` is `r sprintf("%.3f", gv("sigma.yr", "q50"))`
+(`r sprintf("%.3f", gv("sigma.yr", "q2.5"))` –
+`r sprintf("%.3f", gv("sigma.yr", "q97.5"))`). For a prime adult female inside
+the park, mean annual survival of
+`r sprintf("%.3f", gv("surv.annual[3,1,1]", "q50"))` and a ±1 SD year effect
+span roughly
+`r sprintf("%.2f", plogis(qlogis(gv("surv.annual[3,1,1]", "q50")) - gv("sigma.yr", "q50")))`
+to
+`r sprintf("%.2f", plogis(qlogis(gv("surv.annual[3,1,1]", "q50")) + gv("sigma.yr", "q50")))`.
+Only `r sy[which(ey_df$clear)]` has a year effect whose interval clears zero.
+
+::: {.callout-important appearance="simple"}
+**This effect is only estimable on the annual scale.** Placed on per-interval
+survival — the natural way to write it, since that is what the CJS models —
+`sigma.yr` is not identified at all. Per-interval survival is about 0.96, which
+on the logit scale sits close enough to the boundary that large changes barely
+move the probability; the likelihood is flat there and `sigma.yr` runs to
+whatever bound the prior supplies. Widening the prior from `dunif(0,5)` to
+`dunif(0,20)` moved the estimate from 3.9 to 15.9, which is how this was
+diagnosed. On the annual scale, where survival is around 0.85, it is well
+identified and R̂ = `r sprintf("%.3f", gv("sigma.yr", "Rhat"))`.
+:::
+
+`sigma.fec.yr` = `r sprintf("%.3f", gv("sigma.fec.yr", "q50"))`
+(`r sprintf("%.3f", gv("sigma.fec.yr", "q2.5"))` –
+`r sprintf("%.3f", gv("sigma.fec.yr", "q97.5"))`) is shrunk hard toward zero.
+With `r fecd$n` female-years across `r length(unique(dat$fec_data$year))` years
+and `r sprintf("%.0f%%", 100 * mean(fecd$C == 0))` of them zeros, between-year
+variation cannot be separated from the zero-inflation parameter ψ. Read that as
+*not detectable in these data*, not as evidence that fecundity is constant.
+
 # Population size and growth
 
 ```{r}
@@ -509,7 +708,7 @@ nt_df |>
 
 ```{r}
 #| label: fig-lambda
-#| fig-cap: "Annual population growth rate. Vital rates are constant through time, so variation here reflects age structure settling rather than changing demography."
+#| fig-cap: "Annual population growth rate. Survival carries a year random effect that feeds through into the projection, so this varies with the estimated year-to-year survival rather than being constant. Fecundity is held at its marginal mean -- see the note below."
 #| fig-height: 4
 lam_df <- tibble::tibble(
   year = sy[-length(sy)],
@@ -526,19 +725,128 @@ ggplot(lam_df, aes(year, est)) +
 ```
 
 ::: {.callout-important appearance="simple"}
-The Leslie projection assumes constant vital rates and no immigration or
-emigration ("growth in place"). $\lambda$ is therefore a property of the fitted
-demography, not an independent measurement of year-to-year change, and it
-cannot detect a real change in demographic rates through time.
+**What this variation does and does not include.** $\lambda$ varies here because
+the year random effect on survival feeds through into the projection. It tracks
+that effect closely — the correlation between $\lambda$ and `eps.yr` is 0.99 —
+so this is year-to-year variation in growth attributable to *measured survival*.
+
+```{r}
+#| output: asis
+if (proc_on) {
+  cat(
+    "The projection also carries process error, so variation beyond what",
+    "survival explains has somewhere to go rather than being charged to",
+    "observation error. What remains outside the model is attribution:",
+    "`sigma.proc` is a flat multiplier on abundance and cannot say which vital",
+    "rate moved. Fecundity is still held at its marginal mean across years,",
+    "because the litter records stop in 2015 and a year-specific value for",
+    "2016-2023 would come from the prior rather than from data, so recruitment",
+    "variation lands in `sigma.proc` undifferentiated.\n"
+  )
+} else {
+  cat(
+    "It is not total environmental stochasticity. Fecundity is held at its",
+    "marginal mean across years, because the litter records stop in 2015 and a",
+    "year-specific value for 2016-2023 would come from the prior rather than",
+    "from data. And the projection is deterministic given the vital rates:",
+    "there is no process error, so every departure of the real population from",
+    "the fitted trajectory is charged to observation error in `sigma.c`.",
+    "Variation in recruitment -- often the larger component for lions -- has",
+    "nowhere to go in this model.\n"
+  )
+}
+```
 :::
 
+```{r}
+#| output: asis
+#| label: sec-variance
+# The heading and prose are emitted as markdown here; the table is printed from
+# the ordinary chunk below.  Two alternatives fail, both of them quietly:
+#
+#   * `eval: !expr proc_on` on a captioned chunk -- knitr skips the code but
+#     Quarto still emits the caption, leaving a heading above nothing.
+#   * cat(gt::as_raw_html(tab)) from inside this chunk -- the raw table HTML
+#     swallows every heading that follows it, so sections after this one still
+#     render in the body but never reach the table of contents.
+if (proc_on) {
+  n_mean <- mean(s$q50[grepl("Ntot[", s$parameter, fixed = TRUE)])
+  sc <- gv("sigma.c", "q50")
+  sp <- gv("sigma.proc", "q50")
+
+  cat("\n## Splitting observation error from real fluctuation\n\n")
+  cat(
+    "Without process error every departure of the population from the fitted",
+    "trajectory is charged to `sigma.c`, which conflates two different things:",
+    "how imprecise the closed-capture estimates are, and how much the",
+    "population actually fluctuates. Fitting both separates them.\n\n"
+  )
+}
+```
+
+```{r}
+# No tbl-cap on this chunk: with one, Quarto emits the caption even when the
+# chunk produces nothing.  The title lives in the gt header instead.
+if (proc_on) {
+  tibble::tibble(
+    Source = c(
+      "Observation error in the closed-capture estimates",
+      "Process error: real year-to-year fluctuation"
+    ),
+    Parameter = c("sigma.c", "sigma.proc"),
+    Estimate = c(sc, sp),
+    Lower = c(gv("sigma.c", "q2.5"), gv("sigma.proc", "q2.5")),
+    Upper = c(gv("sigma.c", "q97.5"), gv("sigma.proc", "q97.5")),
+    `As lions` = c(sc, n_mean * (exp(sp) - 1))
+  ) |>
+    gt() |>
+    tab_header(
+      title = "Variance decomposition",
+      subtitle = sprintf("At a mean population of %.0f lions", n_mean)
+    ) |>
+    fmt_number(columns = c(Estimate, Lower, Upper), decimals = 3) |>
+    fmt_number(columns = `As lions`, decimals = 1) |>
+    cols_merge(columns = c(Lower, Upper), pattern = "{1} – {2}") |>
+    cols_label(Lower = "95% CrI") |>
+    cols_width(Source ~ px(300)) |>
+    tab_source_note(paste(
+      "sigma.c is already in lions; sigma.proc is an SD on the log scale,",
+      "shown as the equivalent proportional swing at the mean population size."
+    )) |>
+    tbl_style()
+}
+```
+
+```{r}
+#| output: asis
+if (proc_on) {
+  cat(sprintf(
+    paste(
+      "\nThe two are comparable in size -- roughly %.0f lions of measurement",
+      "imprecision against %.0f lions of genuine fluctuation, a %.1f%% annual",
+      "CV. Fitted without process error the same model puts `sigma.c` at 25.0,",
+      "so about a third of what was being called observation error is really",
+      "the population moving.\n\n",
+      "Two cautions. The lower bound on `sigma.proc` is %.3f, so the data do",
+      "not exclude near-zero process variance. And `sigma.c` spans %.1f to",
+      "%.1f: with %d population estimates the split between the two is",
+      "informed but not sharply determined.\n"
+    ),
+    sc, n_mean * (exp(sp) - 1), 100 * (exp(sp) - 1),
+    gv("sigma.proc", "q2.5"), gv("sigma.c", "q2.5"), gv("sigma.c", "q97.5"),
+    sum(!is.na(Pop))
+  ))
+}
+```
+
+
 Laid out as in Figure 4 of Creel et al.: the growth-rate posterior, then the
-density trend with credible intervals.  Panel (a) covers the population as a
-whole rather than being split by protection level -- see the note below.
+density trend with credible intervals. Panel (a) covers the population as a
+whole; @sec-movement explains why that is the right unit here.
 
 ```{r}
 #| label: fig-growth-density
-#| fig-cap: "(a) Posterior distribution for the annual population growth rate. Unlike Creel et al.'s Figure 4a this is not split by protection level — see the note below. (b) Density through time; points are posterior means and bars 95% credible intervals."
+#| fig-cap: "(a) Posterior distribution for the annual population growth rate. A single curve rather than one per protection level: with dispersal in the projection the two strata share a growth rate — see -movement. (b) Density through time; points are posterior means and bars 95% credible intervals."
 #| fig-height: 8
 last_t <- length(sy) - 1
 
@@ -581,32 +889,124 @@ p_dens <- ggplot(dens_df, aes(year, mean)) +
 p_lam / p_dens
 ```
 
-::: {.callout-important appearance="simple"}
-**Why there is no protection-specific growth rate here.** Creel et al.'s
-Figure 4a shows λ separately for high and low protection. This model does not,
-and the reason is structural rather than a shortage of data.
+## Why one growth rate and not two {#sec-movement}
 
-The Leslie projection treats the two strata as closed sub-populations, but
-Luangwa lions move between them constantly: of transitions between successive
-detections, **11.7% of inside-park lions moved outside and 33.9% of outside
-lions moved inside**, and 234 of 590 lions changed stratum during the study.
-The equilibrium composition implied by movement alone is **0.744 inside against
-0.72 observed** — so composition here is set by dispersal, not by differential
-demography. A stratum-specific λ from a projection with no dispersal term
-conflates the two.
+Creel et al.'s Figure 4a shows λ separately for high and low protection. This
+model reports a single λ — not because the split could not be estimated, but
+because the model with dispersal shows there is no split to report.
 
-Estimating it anyway was tried. `Pop[t]` observes only the total, so the split
-was unidentified ($\hat{R}$ up to 1.26, effective sample sizes near 12). Adding
-a binomial observation on the composition of the detected sample fixed the
-identifiability and broke everything else: with no dispersal available, the
-model matched the observed composition by distorting the vital rates instead —
-`beta.prot` to −1.1, fecundity outside overtaking inside, and `sigma.c` out to
-~70 against ~30 here.
+```{r}
+#| label: tbl-lambda-strata
+#| tbl-cap: "Stratum-specific growth rates in the final year. These are separate parameters in the model, estimated independently, and they converge on the same value."
+lp <- s[s$parameter %in% c(
+  sprintf("lambda.prot[1,%d]", length(sy) - 1),
+  sprintf("lambda.prot[2,%d]", length(sy) - 1),
+  sprintf("lambda.tot[%d]", length(sy) - 1)
+), ]
+lp$label <- c(
+  "Inside park", "Outside park", "Whole population"
+)[match(
+  sub("\\[.*", "", lp$parameter),
+  c("lambda.prot", "lambda.prot", "lambda.tot")
+) + c(0, 1, 0)[seq_len(nrow(lp))]]
 
-The protection effect is therefore estimated where it *is* identified — on
-survival and fecundity — and abundance is projected in aggregate. A
-movement-explicit version is being developed on the `movement-between-strata`
-branch.
+data.frame(
+  Stratum = c("Inside park", "Outside park", "Whole population"),
+  lambda = c(
+    gv(sprintf("lambda.prot[1,%d]", length(sy) - 1), "q50"),
+    gv(sprintf("lambda.prot[2,%d]", length(sy) - 1), "q50"),
+    gv(sprintf("lambda.tot[%d]", length(sy) - 1), "q50")
+  ),
+  Lower = c(
+    gv(sprintf("lambda.prot[1,%d]", length(sy) - 1), "q2.5"),
+    gv(sprintf("lambda.prot[2,%d]", length(sy) - 1), "q2.5"),
+    gv(sprintf("lambda.tot[%d]", length(sy) - 1), "q2.5")
+  ),
+  Upper = c(
+    gv(sprintf("lambda.prot[1,%d]", length(sy) - 1), "q97.5"),
+    gv(sprintf("lambda.prot[2,%d]", length(sy) - 1), "q97.5"),
+    gv(sprintf("lambda.tot[%d]", length(sy) - 1), "q97.5")
+  ),
+  Rhat = c(
+    gv(sprintf("lambda.prot[1,%d]", length(sy) - 1), "Rhat"),
+    gv(sprintf("lambda.prot[2,%d]", length(sy) - 1), "Rhat"),
+    gv(sprintf("lambda.tot[%d]", length(sy) - 1), "Rhat")
+  )
+) |>
+  gt() |>
+  tab_header(title = "Growth rate by stratum") |>
+  fmt_number(columns = c(lambda, Lower, Upper), decimals = 4) |>
+  fmt_number(columns = Rhat, decimals = 3) |>
+  cols_merge(columns = c(Lower, Upper), pattern = "{1} – {2}") |>
+  cols_label(lambda = "λ", Lower = "95% CrI") |>
+  tbl_style()
+```
+
+```{r}
+#| label: tbl-lambda-diff
+#| tbl-cap: "Difference in growth rate between strata, year by year. Taken from the posterior of the difference rather than by comparing two marginal intervals, which would overstate the separation because the two are strongly correlated."
+dm <- do.call(rbind, lapply(ipm$samples, as.matrix))
+nt_l <- length(sy) - 1
+dif <- vapply(seq_len(nt_l), function(t) {
+  dm[, sprintf("lambda.prot[1,%d]", t)] - dm[, sprintf("lambda.prot[2,%d]", t)]
+}, numeric(nrow(dm)))
+qd <- apply(dif, 2, quantile, c(0.025, 0.5, 0.975))
+lam_diff <- data.frame(
+  interval = paste0(head(sy, -1), "–", tail(sy, -1)),
+  inside = apply(dm[, sprintf("lambda.prot[1,%d]", seq_len(nt_l))], 2, median),
+  outside = apply(dm[, sprintf("lambda.prot[2,%d]", seq_len(nt_l))], 2, median),
+  diff = qd[2, ], lo = qd[1, ], hi = qd[3, ]
+)
+lam_diff$clear <- sign(lam_diff$lo) == sign(lam_diff$hi)
+
+lam_diff |>
+  gt() |>
+  tab_header(title = "Growth rate, inside vs outside the park") |>
+  fmt_number(columns = c(inside, outside, diff, lo, hi), decimals = 4) |>
+  cols_merge(columns = c(lo, hi), pattern = "{1} – {2}") |>
+  cols_label(interval = "", inside = "Inside", outside = "Outside",
+             diff = "Difference", lo = "95% CrI") |>
+  cols_hide(clear) |>
+  tab_source_note(sprintf(
+    "The two series correlate %.4f. The difference excludes zero in %d of %d intervals.",
+    cor(lam_diff$inside, lam_diff$outside), sum(lam_diff$clear), nt_l
+  )) |>
+  tbl_style()
+```
+
+The two strata track each other almost exactly: the series correlate
+`r sprintf("%.4f", cor(lam_diff$inside, lam_diff$outside))`, the largest gap in
+any year is `r sprintf("%.3f", max(abs(lam_diff$inside - lam_diff$outside)))`,
+and the difference excludes zero in
+**`r sum(lam_diff$clear)` of `r nt_l` intervals**.
+
+That is close to a structural necessity rather than a coincidence. Dispersal
+holds the composition near its equilibrium, and a population whose composition
+is stationary must grow at one rate throughout. Year-varying survival perturbs
+that slightly — under constant vital rates the two were identical to four
+decimal places — but never enough to separate them.
+
+"Growth rate of the protected sub-population" is only a distinct quantity if the
+sub-populations are demographically closed, and with
+`r sum(apply(jd$area, 1, function(r) length(unique(r)) > 1))` of `r jd$nind`
+lions changing stratum, these are not.
+
+The protection effect is real and is reported where it acts — on survival, and
+to a much weaker degree on fecundity. It does not translate into two separate
+population trajectories, because the lions mix.
+
+::: {.callout-note appearance="simple"}
+**How this was established.** Fitted without dispersal, the stratum-specific
+quantities were unidentified: `Pop[t]` observes only the total, and `Nprot` and
+`lambda.prot` returned $\hat{R}$ up to 1.26 with effective sample sizes near 12.
+Adding composition data alone made things worse — with no dispersal available
+the model matched the observed composition by distorting the vital rates
+instead, pushing `beta.prot` to −1.1 and `sigma.c` to ~70.
+
+Adding dispersal fixed both. Vital rates are unchanged from the no-composition
+fit (`beta.prot` −0.542 → −0.518, `sigma.c` 29.9 → 29.3), and non-converged
+parameters went from 47 of 156 to **0 of 175**. The equality of the two λ values
+is therefore a converged result, not a symptom of poor mixing.
 :::
 
 ::: {.callout-note appearance="simple"}
