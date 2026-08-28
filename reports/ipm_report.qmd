@@ -761,11 +761,14 @@ if (proc_on) {
 ```{r}
 #| output: asis
 #| label: sec-variance
-# Everything here is emitted from inside the conditional, including the table.
-# A separate chunk with `eval: !expr proc_on` does not work: knitr skips the
-# code but Quarto still emits the caption, leaving an orphaned "Observation
-# error against process error" heading above nothing in the non-stochastic
-# report.
+# The heading and prose are emitted as markdown here; the table is printed from
+# the ordinary chunk below.  Two alternatives fail, both of them quietly:
+#
+#   * `eval: !expr proc_on` on a captioned chunk -- knitr skips the code but
+#     Quarto still emits the caption, leaving a heading above nothing.
+#   * cat(gt::as_raw_html(tab)) from inside this chunk -- the raw table HTML
+#     swallows every heading that follows it, so sections after this one still
+#     render in the body but never reach the table of contents.
 if (proc_on) {
   n_mean <- mean(s$q50[grepl("Ntot[", s$parameter, fixed = TRUE)])
   sc <- gv("sigma.c", "q50")
@@ -778,8 +781,14 @@ if (proc_on) {
     "how imprecise the closed-capture estimates are, and how much the",
     "population actually fluctuates. Fitting both separates them.\n\n"
   )
+}
+```
 
-  tab <- tibble::tibble(
+```{r}
+# No tbl-cap on this chunk: with one, Quarto emits the caption even when the
+# chunk produces nothing.  The title lives in the gt header instead.
+if (proc_on) {
+  tibble::tibble(
     Source = c(
       "Observation error in the closed-capture estimates",
       "Process error: real year-to-year fluctuation"
@@ -805,11 +814,15 @@ if (proc_on) {
       "shown as the equivalent proportional swing at the mean population size."
     )) |>
     tbl_style()
-  cat(gt::as_raw_html(tab), "\n\n")
+}
+```
 
+```{r}
+#| output: asis
+if (proc_on) {
   cat(sprintf(
     paste(
-      "The two are comparable in size -- roughly %.0f lions of measurement",
+      "\nThe two are comparable in size -- roughly %.0f lions of measurement",
       "imprecision against %.0f lions of genuine fluctuation, a %.1f%% annual",
       "CV. Fitted without process error the same model puts `sigma.c` at 25.0,",
       "so about a third of what was being called observation error is really",
