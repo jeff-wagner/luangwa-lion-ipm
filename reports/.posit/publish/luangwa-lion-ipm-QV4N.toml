@@ -10,6 +10,7 @@ files = [
     "/.posit/publish/luangwa-lion-ipm-QV4N.toml",
     "/.posit/publish/deployments/deployment-VT3P.toml",
     "!/.posit",
+    "/ipm_report_stochastic.html",
 ]
 validate = true
 product_type = "connect_cloud"

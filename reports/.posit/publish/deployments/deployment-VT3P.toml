@@ -10,10 +10,11 @@ id = "01a026a0-5901-246e-4f8b-fc95ec419b5c"
 dashboard_url = "https://connect.posit.cloud/jeff-wagner/content/01a026a0-5901-246e-4f8b-fc95ec419b5c"
 direct_url = "https://01a026a0-5901-246e-4f8b-fc95ec419b5c.share.connect.posit.cloud"
 logs_url = "https://connect.posit.cloud/jeff-wagner/content/01a026a0-5901-246e-4f8b-fc95ec419b5c/history"
-deployed_at = "2026-08-24T21:03:57.943Z"
-bundle_id = "01a03596-1b3b-598c-c018-e9cb0ab094ca"
+deployed_at = "2026-08-28T16:46:18.776Z"
+bundle_id = "01a04943-aad8-f314-31a2-a8287e2a9cac"
 files = [
     "ipm_report.html",
+    "ipm_report_stochastic.html",
 ]
 
 [connect_cloud]
@@ -29,6 +30,7 @@ files = [
     "/.posit/publish/luangwa-lion-ipm-QV4N.toml",
     "/.posit/publish/deployments/deployment-VT3P.toml",
     "!/.posit",
+    "/ipm_report_stochastic.html",
 ]
 validate = true
 product_type = "connect_cloud"
