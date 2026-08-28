@@ -3,14 +3,12 @@
 # https://github.com/posit-dev/publisher/blob/main/docs/configuration.md
 "$schema" = "https://cdn.posit.co/publisher/schemas/posit-publishing-schema-v3.json"
 type = "html"
-entrypoint = "ipm_report.html"
-title = "luangwa-lion-ipm"
+entrypoint = "ipm_report_stochastic.html"
+title = "luangwa-lion"
 files = [
-    "/ipm_report.html",
-    "/.posit/publish/luangwa-lion-ipm-QV4N.toml",
-    "/.posit/publish/deployments/deployment-VT3P.toml",
-    "!/.posit",
     "/ipm_report_stochastic.html",
+    "/.posit/publish/luangwa-lion-GPPM.toml",
+    "/.posit/publish/deployments/deployment-BPQ1.toml",
 ]
 validate = true
 product_type = "connect_cloud"
