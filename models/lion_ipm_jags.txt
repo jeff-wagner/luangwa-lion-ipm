@@ -236,6 +236,41 @@ for (r in 1:n.region) {
 # Annual transition rates are estimated from the capture histories: of lion-
 # years where the stratum was observed in both year t and year t+1, n12 of n1
 # moved from inside the park to outside, and n21 of n2 moved the other way.
+# -----------------------------------------------------------------------------
+# PROCESS ERROR
+# -----------------------------------------------------------------------------
+# Environmental stochasticity in the projection: a shared multiplicative shock
+# per year, applied to every age class, sex and stratum alike.
+#
+# Without this the projection is deterministic given the vital rates, so every
+# departure of the real population from the fitted trajectory is charged to
+# observation error in sigma.c.  That conflates two different things -- how
+# imprecise the closed-capture estimates are, and how much the population
+# actually fluctuates.  Splitting them is the point of a state-space model.
+#
+# The shock is applied only over the study years, not during the projection
+# burn-in: the burn-in exists to settle the age structure toward its stable
+# distribution, and random shocks there would add noise with no data to inform
+# it.  proc.on[j] is 0/1 data marking which projection steps are study years.
+#
+# NOTE ON IDENTIFIABILITY: this is deliberately fitted alongside the year random
+# effect on survival, and the two are near-confounded -- both act as
+# year-specific multipliers on abundance.  They are not identical (eps.yr acts
+# through survival and so reshapes the age structure, while eps.proc is a flat
+# multiplier that leaves composition untouched), but with 11 population
+# estimates and 8 years of composition data supporting 15 process terms on top
+# of 16 survival year effects, they may not separate.  If they do not, expect
+# sigma.proc and sigma.yr to trade off with poor mixing -- which is itself the
+# answer.
+sigma.proc ~ dunif(0, 1)
+tau.proc <- pow(sigma.proc, -2)
+
+for (j in 1:(n.proj - 1)) {
+  eps.proc.raw[j] ~ dnorm(0, tau.proc)
+  eps.proc[j] <- eps.proc.raw[j] * use.proc * proc.on[j]
+  proc.mult[j] <- exp(eps.proc[j])
+}
+
 psi12 ~ dunif(0, 1)     # inside -> outside, annual
 psi21 ~ dunif(0, 1)     # outside -> inside, annual
 
@@ -304,10 +339,16 @@ for (j in 1:(n.proj - 1)) {
   # reasonable; treating male and female dispersal as equal is a simplification
   # worth relaxing if the sex-specific transition counts support it.
   for (a in 1:7) {
-    N.f[a, j + 1, 1] <- Sf[a, j, 1] * (1 - psi12) + Sf[a, j, 2] * psi21
-    N.f[a, j + 1, 2] <- Sf[a, j, 2] * (1 - psi21) + Sf[a, j, 1] * psi12
-    N.m[a, j + 1, 1] <- Sm[a, j, 1] * (1 - psi12) + Sm[a, j, 2] * psi21
-    N.m[a, j + 1, 2] <- Sm[a, j, 2] * (1 - psi21) + Sm[a, j, 1] * psi12
+    # survivors are redistributed between strata, then the whole cohort is
+    # scaled by that year's environmental shock
+    N.f[a, j + 1, 1] <- (Sf[a, j, 1] * (1 - psi12) + Sf[a, j, 2] * psi21) *
+                        proc.mult[j]
+    N.f[a, j + 1, 2] <- (Sf[a, j, 2] * (1 - psi21) + Sf[a, j, 1] * psi12) *
+                        proc.mult[j]
+    N.m[a, j + 1, 1] <- (Sm[a, j, 1] * (1 - psi12) + Sm[a, j, 2] * psi21) *
+                        proc.mult[j]
+    N.m[a, j + 1, 2] <- (Sm[a, j, 2] * (1 - psi21) + Sm[a, j, 1] * psi12) *
+                        proc.mult[j]
   }
 }
 

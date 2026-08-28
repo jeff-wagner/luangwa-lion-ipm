@@ -66,7 +66,7 @@ MODEL_FILE <- "models/lion_ipm_jags.txt"
 # Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
 # with the branch -- a tag keeps an exploratory run from silently overwriting the
 # results the report renders from.  Empty on main.
-OUTPUT_TAG <- "_full"
+OUTPUT_TAG <- "_stoch"
 
 # --- settings ---------------------------------------------------------------
 
@@ -272,7 +272,14 @@ USE_YEAR_RE_SURV <- 1
 USE_YEAR_RE_FEC  <- 1
 
 
-PROPAGATE_YEAR_EFFECTS <- FALSE
+PROPAGATE_YEAR_EFFECTS <- TRUE
+
+# Environmental stochasticity in the projection.  Fitted alongside the survival
+# year effect deliberately: eps.yr carries variation traceable to measured
+# survival, eps.proc picks up the residual, which is where recruitment
+# stochasticity would show.  The two are near-confounded and may not separate --
+# see the note in the model file.
+USE_PROCESS_ERROR <- 1
 
 surv_idx <- integer(PROJECTION_BURN_IN + n_occ - 1)
 surv_idx[seq_len(PROJECTION_BURN_IN)] <- nyears + 1L # burn-in: use the mean
@@ -316,6 +323,10 @@ jags.data <- list(
   int.len = int_len,
   n.int.type = n_int_type,
   cub.obs.frac = cub_obs_frac,
+  use.proc = USE_PROCESS_ERROR,
+  # process error applies over the study years only, not the burn-in, which
+  # exists to settle the age structure with no data to inform shocks
+  proc.on = as.integer(surv_idx <= nyears),
   use.yr.re = USE_YEAR_RE_SURV,
   use.fec.re = USE_YEAR_RE_FEC,
   yr.occ = yr_occ,
@@ -376,6 +387,8 @@ inits <- function() {
     gamma = c(NA, rnorm(n_region - 1, 0, 0.3)),
     k = as.numeric(fecd$C > 0),
     sigma.c = runif(1, 5, 30),
+    sigma.proc = runif(1, 0.02, 0.12),
+    eps.proc.raw = rnorm(PROJECTION_BURN_IN + n_occ - 1, 0, 0.05),
     sigma.yr = runif(1, 0.05, 0.3),
     eps.yr.raw = rnorm(nyears, 0, 0.1),
     sigma.fec.yr = runif(1, 0.05, 0.3),
@@ -390,6 +403,7 @@ params <- c(
   "alpha", "psi", "gamma", "fec",
   "sigma.c", "Ntot", "Nprot", "prop.in", "Density",
   "sigma.yr", "eps.yr", "sigma.fec.yr", "eps.fec", "fec.yr",
+  "sigma.proc", "eps.proc",
   "lambda.tot", "lambda.prot",
   "psi12", "psi21", "prop.equil"
 )
@@ -489,6 +503,7 @@ saveRDS(
       USE_YEAR_RE_SURV = USE_YEAR_RE_SURV,
       USE_YEAR_RE_FEC = USE_YEAR_RE_FEC,
       PROPAGATE_YEAR_EFFECTS = PROPAGATE_YEAR_EFFECTS,
+      USE_PROCESS_ERROR = USE_PROCESS_ERROR,
       INT_LEN = int_len,
       CUB_OBS_FRAC = cub_obs_frac,
       PARALLEL_CHAINS = PARALLEL_CHAINS,
