@@ -66,7 +66,7 @@ MODEL_FILE <- "models/lion_ipm_jags.txt"
 # Suffix on the output filenames.  output/ is gitignored, so it does NOT switch
 # with the branch -- a tag keeps an exploratory run from silently overwriting the
 # results the report renders from.  Empty on main.
-OUTPUT_TAG <- ""
+OUTPUT_TAG <- "_stoch"
 
 # --- settings ---------------------------------------------------------------
 
@@ -213,6 +213,97 @@ if (n_region < 2) {
   )
 }
 
+# --- indices for the year random effects ------------------------------------
+# yr.occ[t]    year index (1..nyears) of CJS occasion t.  The survival interval
+#              from t-1 to t is attributed to the year of occasion t-1.
+# surv.idx[j]  which slice of surv.all the projection step j should use.
+#              Study-year steps point at that year; burn-in steps point at the
+#              extra slot nyears+1, which holds the year-effect-zero mean.
+#              JAGS cannot branch on a computed index, so this is built here.
+# fec.year[i]  year index of fecundity record i, within the years the LITTER
+#              data actually cover (2008-2015) rather than all study years.
+
+# --- interval lengths ------------------------------------------------------
+# The occasions are evenly spaced only within a year.  With four 2-month bins
+# the gaps between bin midpoints run 61, 62, 61 and 181 days, so the wet-season
+# interval is about three times the others.  int.len[k] is the length of
+# interval type k as a fraction of a year; int.type[t] says which type interval
+# t is.  Derived from the occasion midpoints, so they follow BIN_MONTHS.
+n_bins <- jd$n.occasions / n_occ
+gaps_years <- as.numeric(diff(d$occasion_key$mid_date)) / 365.25
+int_type <- ((seq_len(jd$n.occasions - 1) - 1) %% n_bins) + 1L
+int_len <- as.numeric(tapply(gaps_years, int_type, mean))
+n_int_type <- length(int_len)
+
+# Fraction of the 24-month cub age class during which cubs are detectable.
+# Recovered from the exponents script 01 computed, so the two stay consistent:
+# surv.exp / surv.exp.cub = (24 - CUB_UNSEEN_MONTHS) / 24.
+cub_obs_frac <- jd$surv.exp / jd$surv.exp.cub
+
+cat("
+--- interval lengths ---
+")
+cat("bins per year:", n_bins, "
+")
+cat("interval lengths (fraction of a year):", round(int_len, 4), "
+")
+cat("they sum to:", round(sum(int_len), 4),
+    " -- the old model assumed", round(1 / jd$surv.exp, 4), "each
+")
+cat("cub observable fraction:", round(cub_obs_frac, 4), "
+")
+
+nyears <- n_occ
+yr_occ <- match(d$occasion_key$year, study_years)
+stopifnot(length(yr_occ) == jd$n.occasions, !anyNA(yr_occ))
+
+# Should the year effect flow into the projection, or only into the CJS fit?
+#
+# TRUE  -- the projection uses year-specific survival, so lambda varies by year.
+#          Scientifically the more interesting version, but it hands the model
+#          16 free year effects to fit 11 population observations with.
+# FALSE -- the projection uses the year-effect-zero mean throughout.  The year
+#          effect then improves the CJS fit and the calibration of the survival
+#          estimates without giving the state-space component extra freedom.
+# Year random effects on/off.  This run isolates the protection-rule change, so
+# both are off and the model reduces to the one main fits -- reparameterised on
+# the annual scale, which is equivalent when the year effects are zero.
+USE_YEAR_RE_SURV <- 1
+USE_YEAR_RE_FEC  <- 1
+
+
+PROPAGATE_YEAR_EFFECTS <- TRUE
+
+# Environmental stochasticity in the projection.  Fitted alongside the survival
+# year effect deliberately: eps.yr carries variation traceable to measured
+# survival, eps.proc picks up the residual, which is where recruitment
+# stochasticity would show.  The two are near-confounded and may not separate --
+# see the note in the model file.
+USE_PROCESS_ERROR <- 1
+
+surv_idx <- integer(PROJECTION_BURN_IN + n_occ - 1)
+surv_idx[seq_len(PROJECTION_BURN_IN)] <- nyears + 1L # burn-in: use the mean
+surv_idx[(PROJECTION_BURN_IN + 1):length(surv_idx)] <- if (PROPAGATE_YEAR_EFFECTS) {
+  seq_len(length(surv_idx) - PROJECTION_BURN_IN) # study years 1..(n_occ-1)
+} else {
+  nyears + 1L # mean throughout
+}
+stopifnot(all(surv_idx >= 1), all(surv_idx <= nyears + 1))
+
+fec_years <- sort(unique(d$fec_data$year))
+n_fec_yr <- length(fec_years)
+fec_year_idx <- match(d$fec_data$year, fec_years)
+stopifnot(length(fec_year_idx) == fecd$n, !anyNA(fec_year_idx))
+
+cat("\n--- year random effects ---\n")
+cat("survival: ", nyears, "years,", jd$n.occasions, "occasions\n")
+cat(
+  "fecundity:", n_fec_yr, "years (",
+  min(fec_years), "-", max(fec_years), "), ",
+  fecd$n, "female-years\n"
+)
+cat("female-years per fecundity year:", table(fec_year_idx), "\n")
+
 # --- data bundle ------------------------------------------------------------
 # idx.obs maps study year t onto its column in the projection, which starts
 # PROJECTION_BURN_IN years before the study.  Passing it as data keeps the
@@ -227,6 +318,21 @@ jags.data <- list(
   age = jd$age,
   sex = jd$sex,
   area = jd$area,
+  nyears = nyears,
+  int.type = int_type,
+  int.len = int_len,
+  n.int.type = n_int_type,
+  cub.obs.frac = cub_obs_frac,
+  use.proc = USE_PROCESS_ERROR,
+  # process error applies over the study years only, not the burn-in, which
+  # exists to settle the age structure with no data to inform shocks
+  proc.on = as.integer(surv_idx <= nyears),
+  use.yr.re = USE_YEAR_RE_SURV,
+  use.fec.re = USE_YEAR_RE_FEC,
+  yr.occ = yr_occ,
+  surv.idx = surv_idx,
+  n.fec.yr = n_fec_yr,
+  fec.year = fec_year_idx,
   surv.exp = jd$surv.exp,
   surv.exp.cub = jd$surv.exp.cub,
   C = fecd$C,
@@ -281,6 +387,12 @@ inits <- function() {
     gamma = c(NA, rnorm(n_region - 1, 0, 0.3)),
     k = as.numeric(fecd$C > 0),
     sigma.c = runif(1, 5, 30),
+    sigma.proc = runif(1, 0.02, 0.12),
+    eps.proc.raw = rnorm(PROJECTION_BURN_IN + n_occ - 1, 0, 0.05),
+    sigma.yr = runif(1, 0.05, 0.3),
+    eps.yr.raw = rnorm(nyears, 0, 0.1),
+    sigma.fec.yr = runif(1, 0.05, 0.3),
+    eps.fec.raw = rnorm(n_fec_yr, 0, 0.1),
     N1 = rep(start_scale, n_region)
   )
 }
@@ -290,6 +402,8 @@ params <- c(
   "mean.p", "sigma.p",
   "alpha", "psi", "gamma", "fec",
   "sigma.c", "Ntot", "Nprot", "prop.in", "Density",
+  "sigma.yr", "eps.yr", "sigma.fec.yr", "eps.fec", "fec.yr",
+  "sigma.proc", "eps.proc",
   "lambda.tot", "lambda.prot",
   "psi12", "psi21", "prop.equil"
 )
@@ -385,6 +499,13 @@ saveRDS(
       AREA_KM2 = AREA_KM2,
       CUB_SEX_RATIO = CUB_SEX_RATIO,
       PROJECTION_BURN_IN = PROJECTION_BURN_IN,
+      PROTECTION_RULE_NOTE = "set in R/01_capture_histories.R",
+      USE_YEAR_RE_SURV = USE_YEAR_RE_SURV,
+      USE_YEAR_RE_FEC = USE_YEAR_RE_FEC,
+      PROPAGATE_YEAR_EFFECTS = PROPAGATE_YEAR_EFFECTS,
+      USE_PROCESS_ERROR = USE_PROCESS_ERROR,
+      INT_LEN = int_len,
+      CUB_OBS_FRAC = cub_obs_frac,
       PARALLEL_CHAINS = PARALLEL_CHAINS,
       N_CHAINS = N_CHAINS,
       N_ITER = N_ITER,

@@ -24,12 +24,84 @@ model {
 beta.sex ~ dlogis(0, 1)      # male effect
 beta.prot ~ dlogis(0, 1)     # effect of low protection
 
+# The survival parameters live on the ANNUAL scale, and the per-interval phi
+# the CJS needs is derived from them by taking the appropriate root.  This is
+# the reverse of the usual formulation and it matters.
+#
+# Written the usual way -- year effect on the per-interval logit -- sigma.yr is
+# not identified.  Per-interval survival is about 0.96 (annual 0.85 over four
+# occasions), which on the logit scale is ~3.2, close enough to the boundary
+# that large changes in the logit barely move phi.  The likelihood is then flat
+# in that direction and sigma.yr simply runs to whatever bound the prior gives
+# it: 3.9 under dunif(0,5), and 15.9 under dunif(0,20).
+#
+# On the annual scale survival is ~0.85, well away from the boundary, the
+# likelihood is informative about sigma.yr, and sigma.yr means something
+# reportable -- between-year SD of annual survival on the logit scale.
+sigma.yr ~ dunif(0, 5)
+tau.yr <- pow(sigma.yr, -2)
+# use.yr.re is 0/1 data.  At 0 every year effect is exactly zero and the model
+# collapses to the constant-survival version -- which lets the same model file
+# serve both, so a run with year effects off is otherwise identical rather than
+# a different file that might have drifted.  sigma.yr then samples its prior
+# and should not be reported.
+for (u in 1:nyears) {
+  eps.yr.raw[u] ~ dnorm(0, tau.yr)
+  eps.yr[u] <- eps.yr.raw[u] * use.yr.re
+}
+
+# Annual-scale linear predictor.  mean.ageclass is now logit ANNUAL survival.
 for (a in 1:nageclass) {
   mean.ageclass[a] ~ dlogis(0, 1)
-  logit(phi[a, 1, 1]) <- mean.ageclass[a]                          # F, high
-  logit(phi[a, 2, 1]) <- mean.ageclass[a] + beta.sex               # M, high
-  logit(phi[a, 1, 2]) <- mean.ageclass[a] + beta.prot              # F, low
-  logit(phi[a, 2, 2]) <- mean.ageclass[a] + beta.sex + beta.prot   # M, low
+  lp[a, 1, 1] <- mean.ageclass[a]                          # F, high protection
+  lp[a, 2, 1] <- mean.ageclass[a] + beta.sex               # M, high
+  lp[a, 1, 2] <- mean.ageclass[a] + beta.prot              # F, low
+  lp[a, 2, 2] <- mean.ageclass[a] + beta.sex + beta.prot   # M, low
+}
+
+for (a in 1:nageclass) {
+  for (s in 1:2) {
+    for (r in 1:n.region) {
+      logit(ann.mean[a, s, r]) <- lp[a, s, r]
+      for (u in 1:nyears) {
+        logit(ann[a, s, r, u]) <- lp[a, s, r] + eps.yr[u]
+      }
+    }
+  }
+}
+
+# Per-interval survival for the CJS, as annual survival raised to the fraction
+# of a year that interval actually spans.
+#
+# The intervals are NOT equal.  With May-Jun, Jul-Aug, Sep-Oct and Nov-Dec
+# bins, the gaps between bin midpoints are about 61, 62, 61 and 181 days --
+# 0.167, 0.170, 0.167 and 0.496 of a year.  Treating all four as 1/4 of a year,
+# as the published model does, overstates survival across the long wet-season
+# gap and understates it across the three short dry-season ones.  The annual
+# total came out right (the exponents summed to 1), which is why the error is
+# easy to miss, but the per-interval rates were wrong and so was the way the
+# year effect and the age structure interacted with them.
+#
+# int.len[k] is the length of interval type k as a fraction of a year and
+# int.type[t] says which type interval t is; both are computed in R/04_ipm.R
+# from the occasion midpoints, so they follow BIN_MONTHS automatically.
+#
+# cub.obs.frac carries Creel et al.'s cub correction into this parameterisation:
+# cubs are undetectable for roughly the first 4.41 months of their 24-month age
+# class, so only 19.59/24 = 0.816 of the class is observable and the effective
+# exponent shrinks accordingly.  With four equal intervals this reproduces the
+# published 3.672-vs-3 ratio exactly.
+for (s in 1:2) {
+  for (r in 1:n.region) {
+    for (u in 1:nyears) {
+      for (k in 1:n.int.type) {
+        phi[1, s, r, u, k] <- pow(ann[1, s, r, u], int.len[k] * cub.obs.frac)
+        for (a in 2:nageclass) {
+          phi[a, s, r, u, k] <- pow(ann[a, s, r, u], int.len[k])
+        }
+      }
+    }
+  }
 }
 
 mean.p ~ dunif(0, 1)
@@ -37,9 +109,9 @@ mu.p <- log(mean.p / (1 - mean.p))
 sigma.p ~ dunif(0, 5)
 tau.p <- pow(sigma.p, -2)
 
-# DEPARTURE 1: p carries an individual effect only, so it is indexed by
-# individual alone.  The published code writes the same quantity inside a loop
-# over occasions, creating n.occasions identical nodes per lion.
+# DEPARTURE 1: p carries an individual effect only.  A year effect on detection
+# was tried alongside the one on survival and made things worse, not better --
+# see the notes in R/04_ipm.R.
 for (i in 1:nind) {
   epsilon[i] ~ dnorm(0, tau.p) T(-16, 16)
   logit(p[i]) <- mu.p + epsilon[i]
@@ -48,10 +120,18 @@ for (i in 1:nind) {
 # Latent alive-states.  This is the formulation JAGS handles well and NIMBLE
 # does not: 590 x 64 discrete latent nodes, which NIMBLE gives individual
 # binary samplers and spends essentially all its time on.
+# yr.occ[t] is the year index of occasion t.  The interval from t-1 to t is
+# attributed to the year occasion t-1 falls in, so the three within-year
+# intervals and the one spanning the wet season all carry that year's effect.
 for (i in 1:nind) {
   z[i, f[i]] <- 1
   for (t in (f[i] + 1):n.occasions) {
-    z[i, t] ~ dbern(phi[age[i, t - 1], sex[i], area[i, t - 1]] * z[i, t - 1])
+    z[i, t] ~ dbern(
+      phi[
+        age[i, t - 1], sex[i], area[i, t - 1],
+        yr.occ[t - 1], int.type[t - 1]
+      ] * z[i, t - 1]
+    )
     y[i, t] ~ dbern(p[i] * z[i, t])
   }
 }
@@ -59,11 +139,23 @@ for (i in 1:nind) {
 # Annualise per-interval survival.  surv.exp and surv.exp.cub are supplied as
 # data so the exponents follow the number of occasions per year set in
 # R/01_capture_histories.R.
-for (s in 1:2) {
-  for (r in 1:n.region) {
-    surv[1, s, r] <- pow(phi[1, s, r], surv.exp.cub)
-    for (a in 2:nageclass) {
-      surv[a, s, r] <- pow(phi[a, s, r], surv.exp)
+# surv.all[a, s, r, u] holds annual survival for each of the nyears study
+# years, plus one extra slot at nyears+1 holding the mean (year effect zero).
+# The projection indexes into it with surv.idx[j], which points burn-in steps
+# at the mean slot and study-year steps at that year -- JAGS cannot branch on a
+# computed index, so the branch is precomputed in R and passed as data.
+# Annual survival is now a parameter rather than something derived, so
+# surv.all is just ann with the year-effect-zero mean appended in the extra
+# slot the projection uses during burn-in.
+for (a in 1:nageclass) {
+  for (s in 1:2) {
+    for (r in 1:n.region) {
+      for (u in 1:nyears) {
+        surv.all[a, s, r, u] <- ann[a, s, r, u]
+      }
+      surv.all[a, s, r, nyears + 1] <- ann.mean[a, s, r]
+      # reported annual survival, for the summary tables
+      surv[a, s, r] <- ann.mean[a, s, r]
     }
   }
 }
@@ -84,9 +176,20 @@ for (r in 2:n.region) {
   gamma[r] ~ dnorm(0, 0.1) T(-10, 10)
 }
 
+# Year random effect on fecundity, on the log scale of the Poisson mean.
+# n.fec.yr is the number of years the LITTER data cover (2008-2015), not the
+# number of study years -- there is no fecundity data after 2015, so estimating
+# an effect for those years would return the prior.
+sigma.fec.yr ~ dunif(0, 5)
+tau.fec.yr <- pow(sigma.fec.yr, -2)
+for (u in 1:n.fec.yr) {
+  eps.fec.raw[u] ~ dnorm(0, tau.fec.yr)
+  eps.fec[u] <- eps.fec.raw[u] * use.fec.re
+}
+
 for (i in 1:n.fec) {
   k[i] ~ dbern(psi)
-  log(lambda[i]) <- alpha + gamma[region[i]]
+  log(lambda[i]) <- alpha + gamma[region[i]] + eps.fec[fec.year[i]]
   mu.f[i] <- lambda[i] * k[i] + 0.00001
   C[i] ~ dpois(mu.f[i])
 }
@@ -96,8 +199,23 @@ for (i in 1:n.fec) {
 # (fec.prot1 <- mean(mu.f[1:74]) in the published code).  Same quantity in
 # expectation, without the Monte Carlo noise from the latent k[i], and without
 # depending on the data staying sorted by stratum.
+# The projection uses the MARGINAL mean fecundity across years, not a
+# year-specific value.  Two reasons: the litter data stop in 2015, so
+# year-specific fecundity for 2016-2023 would be drawn from the prior and would
+# inject noise into the projection rather than information; and the marginal
+# mean is what a stationary projection should use.
+#
+# Note the exp(sigma^2/2): for eps ~ Normal(0, sigma^2), E[exp(eps)] is not 1
+# but exp(sigma^2/2).  Dropping it would make fec[] the median rather than the
+# mean and would bias the projection low whenever between-year variation is
+# appreciable.
 for (r in 1:n.region) {
-  fec[r] <- psi * exp(alpha + gamma[r])
+  fec[r] <- psi * exp(alpha + gamma[r] + 0.5 * pow(sigma.fec.yr, 2) * use.fec.re)
+
+  # year-specific fecundity, for reporting over the years that have data
+  for (u in 1:n.fec.yr) {
+    fec.yr[r, u] <- psi * exp(alpha + gamma[r] + eps.fec[u])
+  }
 }
 
 
@@ -118,6 +236,41 @@ for (r in 1:n.region) {
 # Annual transition rates are estimated from the capture histories: of lion-
 # years where the stratum was observed in both year t and year t+1, n12 of n1
 # moved from inside the park to outside, and n21 of n2 moved the other way.
+# -----------------------------------------------------------------------------
+# PROCESS ERROR
+# -----------------------------------------------------------------------------
+# Environmental stochasticity in the projection: a shared multiplicative shock
+# per year, applied to every age class, sex and stratum alike.
+#
+# Without this the projection is deterministic given the vital rates, so every
+# departure of the real population from the fitted trajectory is charged to
+# observation error in sigma.c.  That conflates two different things -- how
+# imprecise the closed-capture estimates are, and how much the population
+# actually fluctuates.  Splitting them is the point of a state-space model.
+#
+# The shock is applied only over the study years, not during the projection
+# burn-in: the burn-in exists to settle the age structure toward its stable
+# distribution, and random shocks there would add noise with no data to inform
+# it.  proc.on[j] is 0/1 data marking which projection steps are study years.
+#
+# NOTE ON IDENTIFIABILITY: this is deliberately fitted alongside the year random
+# effect on survival, and the two are near-confounded -- both act as
+# year-specific multipliers on abundance.  They are not identical (eps.yr acts
+# through survival and so reshapes the age structure, while eps.proc is a flat
+# multiplier that leaves composition untouched), but with 11 population
+# estimates and 8 years of composition data supporting 15 process terms on top
+# of 16 survival year effects, they may not separate.  If they do not, expect
+# sigma.proc and sigma.yr to trade off with poor mixing -- which is itself the
+# answer.
+sigma.proc ~ dunif(0, 1)
+tau.proc <- pow(sigma.proc, -2)
+
+for (j in 1:(n.proj - 1)) {
+  eps.proc.raw[j] ~ dnorm(0, tau.proc)
+  eps.proc[j] <- eps.proc.raw[j] * use.proc * proc.on[j]
+  proc.mult[j] <- exp(eps.proc[j])
+}
+
 psi12 ~ dunif(0, 1)     # inside -> outside, annual
 psi21 ~ dunif(0, 1)     # outside -> inside, annual
 
@@ -163,21 +316,21 @@ for (j in 1:(n.proj - 1)) {
     # 4-5.99, old 6+), so cub survival covers ages 0->1 AND 1->2, subadult
     # 2->3 and 3->4, prime 4->5 and 5->6.  The published code applies cub
     # survival once and shifts every later class a year early.
-    Sf[2, j, r] <- N.f[1, j, r] * surv[1, 1, r]
-    Sf[3, j, r] <- N.f[2, j, r] * surv[1, 1, r]
-    Sf[4, j, r] <- N.f[3, j, r] * surv[2, 1, r]
-    Sf[5, j, r] <- N.f[4, j, r] * surv[2, 1, r]
-    Sf[6, j, r] <- N.f[5, j, r] * surv[3, 1, r]
-    Sf[7, j, r] <- N.f[6, j, r] * surv[3, 1, r] +
-                   N.f[7, j, r] * surv[4, 1, r]
+    Sf[2, j, r] <- N.f[1, j, r] * surv.all[1, 1, r, surv.idx[j]]
+    Sf[3, j, r] <- N.f[2, j, r] * surv.all[1, 1, r, surv.idx[j]]
+    Sf[4, j, r] <- N.f[3, j, r] * surv.all[2, 1, r, surv.idx[j]]
+    Sf[5, j, r] <- N.f[4, j, r] * surv.all[2, 1, r, surv.idx[j]]
+    Sf[6, j, r] <- N.f[5, j, r] * surv.all[3, 1, r, surv.idx[j]]
+    Sf[7, j, r] <- N.f[6, j, r] * surv.all[3, 1, r, surv.idx[j]] +
+                   N.f[7, j, r] * surv.all[4, 1, r, surv.idx[j]]
 
-    Sm[2, j, r] <- N.m[1, j, r] * surv[1, 2, r]
-    Sm[3, j, r] <- N.m[2, j, r] * surv[1, 2, r]
-    Sm[4, j, r] <- N.m[3, j, r] * surv[2, 2, r]
-    Sm[5, j, r] <- N.m[4, j, r] * surv[2, 2, r]
-    Sm[6, j, r] <- N.m[5, j, r] * surv[3, 2, r]
-    Sm[7, j, r] <- N.m[6, j, r] * surv[3, 2, r] +
-                   N.m[7, j, r] * surv[4, 2, r]
+    Sm[2, j, r] <- N.m[1, j, r] * surv.all[1, 2, r, surv.idx[j]]
+    Sm[3, j, r] <- N.m[2, j, r] * surv.all[1, 2, r, surv.idx[j]]
+    Sm[4, j, r] <- N.m[3, j, r] * surv.all[2, 2, r, surv.idx[j]]
+    Sm[5, j, r] <- N.m[4, j, r] * surv.all[2, 2, r, surv.idx[j]]
+    Sm[6, j, r] <- N.m[5, j, r] * surv.all[3, 2, r, surv.idx[j]]
+    Sm[7, j, r] <- N.m[6, j, r] * surv.all[3, 2, r, surv.idx[j]] +
+                   N.m[7, j, r] * surv.all[4, 2, r, surv.idx[j]]
   }
 
   # --- then movement, applied to the survivors -----------------------------
@@ -186,10 +339,16 @@ for (j in 1:(n.proj - 1)) {
   # reasonable; treating male and female dispersal as equal is a simplification
   # worth relaxing if the sex-specific transition counts support it.
   for (a in 1:7) {
-    N.f[a, j + 1, 1] <- Sf[a, j, 1] * (1 - psi12) + Sf[a, j, 2] * psi21
-    N.f[a, j + 1, 2] <- Sf[a, j, 2] * (1 - psi21) + Sf[a, j, 1] * psi12
-    N.m[a, j + 1, 1] <- Sm[a, j, 1] * (1 - psi12) + Sm[a, j, 2] * psi21
-    N.m[a, j + 1, 2] <- Sm[a, j, 2] * (1 - psi21) + Sm[a, j, 1] * psi12
+    # survivors are redistributed between strata, then the whole cohort is
+    # scaled by that year's environmental shock
+    N.f[a, j + 1, 1] <- (Sf[a, j, 1] * (1 - psi12) + Sf[a, j, 2] * psi21) *
+                        proc.mult[j]
+    N.f[a, j + 1, 2] <- (Sf[a, j, 2] * (1 - psi21) + Sf[a, j, 1] * psi12) *
+                        proc.mult[j]
+    N.m[a, j + 1, 1] <- (Sm[a, j, 1] * (1 - psi12) + Sm[a, j, 2] * psi21) *
+                        proc.mult[j]
+    N.m[a, j + 1, 2] <- (Sm[a, j, 2] * (1 - psi21) + Sm[a, j, 1] * psi12) *
+                        proc.mult[j]
   }
 }
 

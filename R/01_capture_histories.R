@@ -844,6 +844,11 @@ print(table(
 #           PROTECTION_FILE with columns SightingID and protected (1 = inside
 #           the park, 0 = outside), and re-run.  area[] is then built from it.
 
+# How a lion's protection stratum is decided for each occasion.  See the
+# comment at the assignment below for what the two rules do and why the annual
+# one is usually preferable.
+PROTECTION_RULE <- "annual"   # "annual" or "occasion"
+
 SIGHTING_POINTS_FILE <- "data/lion_sighting_points.csv"
 PROTECTION_FILE <- "data/sighting_protection.csv"
 
@@ -927,23 +932,74 @@ if (file.exists(PROTECTION_FILE)) {
     ) |>
     filter(!is.na(area_obs))
 
-  # An individual can be seen more than once in an occasion; take the stratum
-  # it was seen in most often, breaking ties toward low protection (2), which
-  # is the conservative choice for a protection effect.
-  animal_occ_area <- sighting_points |>
+  # Both rules take the stratum a lion was seen in most often.  Ties are broken
+  # by a coin flip rather than by always choosing one stratum: a deterministic
+  # tie-break would push every evenly-split lion the same way and bias the
+  # composition.  This makes area[] stochastic, so it depends on the seed set at
+  # the top of this script -- re-running with a different seed will move a
+  # handful of classifications.
+  #
+  # The two rules differ in the window the majority is taken over.
+  #
+  # "occasion": majority within each 2-month bin.  Keeps within-year movement,
+  #             but a bin with a single sighting is classified on that one
+  #             sighting, and bins with none are filled by carry-forward.
+  #
+  # "annual":   majority over ALL of a lion's sightings in the year, applied to
+  #             every occasion in that year.  Each classification rests on more
+  #             sightings (median 4 per lion-year against 2 per lion-occasion),
+  #             so it is far less sensitive to a single opportunistic sighting
+  #             outside a lion's usual range.  The cost is that within-year
+  #             movement is averaged away.
+  #
+  # The annual rule is a better match for how the protection effect is
+  # interpreted -- as a property of where a lion lived that year, not where it
+  # happened to be on one afternoon.
+  protection_by_sighting <- sighting_points |>
     inner_join(protection, by = "SightingID") |>
-    filter(!is.na(occasion), AnimalID %in% animal_ids) |>
-    count(AnimalID, occasion, area_obs) |>
-    group_by(AnimalID, occasion) |>
-    slice_max(order_by = n, n = 1, with_ties = TRUE) |>
-    summarise(area_obs = max(area_obs), .groups = "drop")
+    filter(!is.na(occasion), AnimalID %in% animal_ids)
 
   area_obs_mat <- matrix(NA_integer_, nrow = nind, ncol = n_occasions)
-  idx <- cbind(
-    match(animal_occ_area$AnimalID, animal_ids),
-    animal_occ_area$occasion
-  )
-  area_obs_mat[idx] <- animal_occ_area$area_obs
+
+  if (PROTECTION_RULE == "occasion") {
+    animal_occ_area <- protection_by_sighting |>
+      count(AnimalID, occasion, area_obs) |>
+      group_by(AnimalID, occasion) |>
+      slice_max(order_by = n, n = 1, with_ties = TRUE) |>
+      summarise(
+        # area_obs[sample.int(...)], never sample(area_obs, 1): with a single
+        # tied row holding the value 2, sample(2, 1) draws from 1:2 instead of
+        # returning 2
+        area_obs = area_obs[sample.int(length(area_obs), 1)],
+        .groups = "drop"
+      )
+
+    area_obs_mat[cbind(
+      match(animal_occ_area$AnimalID, animal_ids),
+      animal_occ_area$occasion
+    )] <- animal_occ_area$area_obs
+  } else if (PROTECTION_RULE == "annual") {
+    animal_year_area <- protection_by_sighting |>
+      count(AnimalID, year, area_obs) |>
+      group_by(AnimalID, year) |>
+      slice_max(order_by = n, n = 1, with_ties = TRUE) |>
+      summarise(
+        area_obs = area_obs[sample.int(length(area_obs), 1)],
+        .groups = "drop"
+      )
+
+    # one classification per lion-year, written to every occasion in that year
+    year_occ <- occasion_key |> select(year, occasion)
+    expanded <- animal_year_area |>
+      inner_join(year_occ, by = "year", relationship = "many-to-many")
+
+    area_obs_mat[cbind(
+      match(expanded$AnimalID, animal_ids),
+      expanded$occasion
+    )] <- expanded$area_obs
+  } else {
+    stop("PROTECTION_RULE must be 'occasion' or 'annual'")
+  }
 
   # Carry the last known stratum forward across occasions when the lion was
   # not seen, then back-fill before its first assignment.
